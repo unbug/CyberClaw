@@ -78,7 +78,7 @@ This plugin currently provides the following skills:
 Before invoking any skills, ensure your hardware is ready:
 
 1.  **Prepare Devices**: You need a **CyberBrick Remote** (Transmitter) and a **CyberBrick Tank/Robot** (Receiver).
-2.  **Pairing**: Follow the [official CyberBrick guide](https://wiki.bambulab.com/en/cyberbrick) to pair your Remote and Tank via ESP-NOW.
+2.  **Pairing**: Use the **CyberBrick App** to pair your Remote and Tank. Follow the [official guide](https://wiki.bambulab.com/en/cyberbrick) if needed.
 3.  **Connection**: Connect the **CyberBrick Remote** to your computer via USB.
 4.  **Power On**: Turn on both the Remote and the Tank. Ensure they are paired (usually indicated by a solid LED).
 
