@@ -12,6 +12,38 @@ Our goal is to **animate the physical world** through AI. By connecting CyberBri
 - 🎭 **Personality Injection**: Programmable "souls" like the "Hyperactive Kid" persona.
 - 🔌 **Universal Control**: A unified driver interface for all standard CyberBrick pinout configurations.
 
+## Architecture
+
+How your AI command travels from the cloud to the physical world:
+
+```mermaid
+graph TD
+    %% Nodes
+    User([👤 User / Feishu]) -->|Chat Command| OpenClaw[🧠 OpenClaw Agent]
+    OpenClaw -->|Invokes Skill| Driver[🔌 CyberBrick Plugin]
+    
+    subgraph Computer [Your Computer / Server]
+        Driver -->|Serial / REPL| USB{🔌 USB Port}
+    end
+    
+    subgraph Hardware [Physical World]
+        USB -->|Serial| Remote[🎮 CyberBrick Remote]
+        Remote -->|ESP-NOW Wireless| Tank[🤖 CyberBrick Tank]
+    end
+
+    %% Styles
+    style OpenClaw fill:#f9f,stroke:#333,stroke-width:2px
+    style Remote fill:#bbf,stroke:#333,stroke-width:2px
+    style Tank fill:#bfb,stroke:#333,stroke-width:2px
+```
+
+1.  **User**: Sends a command (e.g., "Dance!") via Feishu/Lark or CLI.
+2.  **OpenClaw**: Processes the intent and calls the `cyberbrick-driver` skill.
+3.  **Plugin**: Converts the skill call into MicroPython code.
+4.  **USB**: Sends code to the CyberBrick Remote via Serial (REPL).
+5.  **Remote**: Executes the code and sends wireless commands (ESP-NOW) to the Tank.
+6.  **Tank**: Receives commands and moves its motors!
+
 ## Core Capabilities
 
 This plugin currently provides the following skills:
