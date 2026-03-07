@@ -43,5 +43,90 @@ Skills are registered in `SKILL.md` files within each subdirectory and can be in
 - `cyberbrick_wander/`: Contains the wander skill and high-level behavioral logic.
 - `README.md`: Project documentation.
 
+## Installation & Configuration
+
+### Prerequisites
+
+1.  **Python 3.x**: Ensure Python 3 is installed on your system.
+2.  **Dependencies**: Install the required Python packages.
+    ```bash
+    pip3 install -r requirements.txt
+    ```
+
+## Skill Installation
+
+To make these skills available to **all OpenClaw Agents** (Global Installation), or just for a specific project, follow the instructions below.
+
+### Option 1: Global Installation (Recommended)
+
+This will install the skills into OpenClaw's global skill directory, making them accessible to any agent in any workspace.
+
+1.  **Create the global skills directory** (if it doesn't exist):
+    ```bash
+    mkdir -p ~/.openclaw/skills
+    ```
+
+2.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/unbug/CyberBrickClaw.git ~/.openclaw/skills/cyberbrick-claw
+    ```
+
+### Option 2: Workspace-specific Installation
+
+If you only want to use these skills in a specific project workspace.
+
+1.  **Navigate to your workspace**:
+    ```bash
+    cd /path/to/your/workspace
+    ```
+
+2.  **Clone the repository**:
+    ```bash
+    mkdir -p skills
+    git clone https://github.com/unbug/CyberBrickClaw.git skills/cyberbrick-claw
+    ```
+
+### Option 3: Development Mode (Symlink)
+
+If you are developing these skills and want changes to be reflected globally without copying files.
+
+```bash
+mkdir -p ~/.openclaw/skills
+ln -s $(pwd)/cyberbrick_driver ~/.openclaw/skills/cyberbrick-driver
+ln -s $(pwd)/cyberbrick_wander ~/.openclaw/skills/cyberbrick-wander
+```
+
+## Registration
+
+OpenClaw automatically detects `SKILL.md` files in its skill search paths (e.g., `~/.openclaw/skills/` or `./skills/`). No further configuration is usually required once the files are in place.
+
+### Configuration
+
+The CyberBrick Driver needs to know which serial port your device is connected to. It attempts to auto-detect the port, but you can explicitly configure it if needed.
+
+**Option 1: Auto-Detection (Recommended)**
+The driver will automatically look for devices with names like "CyberBrick", "usbmodem", "USB Serial", or "CP210". Just run the commands, and it should work.
+
+**Option 2: Environment Variable**
+Set the `CYBERBRICK_PORT` environment variable to your specific serial port.
+```bash
+# macOS / Linux
+export CYBERBRICK_PORT=/dev/tty.usbmodem12345
+
+# Windows
+set CYBERBRICK_PORT=COM3
+```
+
+**Option 3: Command Line Argument**
+Pass the `--port` argument when running the driver directly.
+```bash
+python3 cyberbrick_driver/cyberbrick_driver.py test --port /dev/tty.usbmodem12345
+```
+
+### Troubleshooting
+
+- **Permission Denied**: If you get a permission error accessing the serial port, you may need to add your user to the `dialout` group (Linux) or check your driver settings.
+- **Device Not Found**: Ensure the CyberBrick is powered on and connected via USB. Check if it appears in `ls /dev/tty.*` (macOS/Linux) or Device Manager (Windows).
+
 ---
 *Powered by OpenClaw & CyberBrick*
