@@ -73,13 +73,26 @@ This plugin currently provides the following skills:
 
 ## Usage
 
+### Hardware Setup
+
+Before invoking any skills, ensure your hardware is ready:
+
+1.  **Prepare Devices**: You need a **CyberBrick Remote** (Transmitter) and a **CyberBrick Tank/Robot** (Receiver).
+2.  **Pairing**: Follow the [official CyberBrick guide](https://wiki.bambulab.com/en/cyberbrick) to pair your Remote and Tank via ESP-NOW.
+3.  **Connection**: Connect the **CyberBrick Remote** to your computer via USB.
+4.  **Power On**: Turn on both the Remote and the Tank. Ensure they are paired (usually indicated by a solid LED).
+
+### Invoking Skills
+
 Skills are registered in `SKILL.md` files within each subdirectory and can be invoked naturally by OpenClaw agents.
 
-### Example Prompts
+**Example Prompts:**
 - "Start wandering around."
 - "Perform a dance routine."
 - "Run a hardware self-test."
 - "Move forward at full speed for 3 seconds."
+
+> **Note**: The Agent communicates with the *Remote* via USB, which then wirelessly controls the *Tank*.
 
 ## Directory Structure
 

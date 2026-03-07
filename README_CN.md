@@ -73,13 +73,26 @@ graph TD
 
 ## 使用方法
 
+### 硬件准备
+
+在使用任何技能之前，请确保您的硬件已准备就绪：
+
+1.  **设备准备**：您需要一个 **CyberBrick 遥控器**（发射端）和一个 **CyberBrick 坦克/机器人**（接收端）。
+2.  **配对**：请参照 [CyberBrick 官方指南](https://wiki.bambulab.com/en/cyberbrick) 完成遥控器与坦克的 ESP-NOW 配对。
+3.  **连接**：将 **CyberBrick 遥控器** 通过 USB 线连接到您的电脑。
+4.  **开机**：同时开启遥控器和坦克的电源。确保它们已成功配对（通常 LED 指示灯常亮）。
+
+### 调用技能
+
 技能注册在每个子目录的 `SKILL.md` 文件中，OpenClaw 智能体可以自然地调用它们。
 
-### 示例提示词 (Prompts)
+**示例提示词 (Prompts):**
 - "开始到处转转。" (Start wandering around.)
 - "表演一段舞蹈。" (Perform a dance routine.)
 - "运行硬件自检。" (Run a hardware self-test.)
 - "全速前进 3 秒钟。" (Move forward at full speed for 3 seconds.)
+
+> **注意**：智能体是通过 USB 与*遥控器*通信，再由遥控器无线控制*坦克*。
 
 ## 目录结构
 
