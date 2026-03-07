@@ -6,7 +6,7 @@
 
 [English](./README.md) | **中文**
 
-[![OpenClaw + CyberBrick Demo](https://img.youtube.com/vi/vC2DL5KLIQE/0.jpg)](https://youtube.com/shorts/vC2DL5KLIQE?si=4Mq9O-QeOiN_DgZT)
+[![OpenClaw + CyberBrick Demo](https://img.youtube.com/vi/vC2DL5KLIQE/0.jpg)](https://www.youtube.com/watch?v=vC2DL5KLIQE)
 
 本插件架起了 [OpenClaw](https://github.com/openclaw) AI 智能体与 [CyberBrick (元气砖)](https://cyberbrick.cn) 硬件之间的桥梁。它赋予任何 CyberBrick 设备（如 Mini T 坦克、机械臂等）自主能力，将静态硬件转变为智能、互动的伙伴。
 
