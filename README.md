@@ -71,13 +71,13 @@ This will install the skills into OpenClaw's global skill directory, making them
     git clone https://github.com/unbug/CyberBrickClaw.git ~/.openclaw/skills/cyberbrick-claw
     ```
 
-### Option 2: Workspace-specific Installation
+### Option 2: Agent Workspace-specific Installation
 
-If you only want to use these skills in a specific project workspace.
+If you only want to use these skills in a specific **Agent Workspace** (the project directory the Agent is currently operating in).
 
-1.  **Navigate to your workspace**:
+1.  **Navigate to the Agent's workspace root**:
     ```bash
-    cd /path/to/your/workspace
+    cd /path/to/agent/workspace
     ```
 
 2.  **Clone the repository**:
