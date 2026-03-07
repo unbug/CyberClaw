@@ -1,10 +1,12 @@
 # CyberBrick Plugin for OpenClaw
 
-<img width="1536" height="1024" alt="Image" src="https://github.com/user-attachments/assets/4a85a34b-f08b-48ec-b1be-7f9eef0aefa2" />
+<img width="1515" height="520" alt="Image" src="https://github.com/user-attachments/assets/99a1ba2e-eb66-4cfe-9443-f694331bdd1d" />
 
 **Giving Life to CyberBrick Devices via AI**
 
 **English** | [中文](./README_CN.md)
+
+[![OpenClaw + CyberBrick Demo](https://img.youtube.com/vi/vC2DL5KLIQE/0.jpg)](https://youtube.com/shorts/vC2DL5KLIQE?si=4Mq9O-QeOiN_DgZT)
 
 This plugin bridges the gap between [OpenClaw](https://github.com/openclaw) AI agents and [CyberBrick](https://cyberbrick.cn) hardware. It empowers any CyberBrick device (Mini T Tank, robotic arms, etc.) with autonomous capabilities, turning static hardware into intelligent, interactive companions.
 

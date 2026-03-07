@@ -1,10 +1,12 @@
 # CyberBrick Plugin for OpenClaw
 
-<img width="1536" height="1024" alt="Image" src="https://github.com/user-attachments/assets/4a85a34b-f08b-48ec-b1be-7f9eef0aefa2" />
+<img width="1515" height="520" alt="Image" src="https://github.com/user-attachments/assets/99a1ba2e-eb66-4cfe-9443-f694331bdd1d" />
 
 **通过 AI 赋予 CyberBrick 设备生命**
 
 [English](./README.md) | **中文**
+
+[![OpenClaw + CyberBrick Demo](https://img.youtube.com/vi/vC2DL5KLIQE/0.jpg)](https://youtube.com/shorts/vC2DL5KLIQE?si=4Mq9O-QeOiN_DgZT)
 
 本插件架起了 [OpenClaw](https://github.com/openclaw) AI 智能体与 [CyberBrick (元气砖)](https://cyberbrick.cn) 硬件之间的桥梁。它赋予任何 CyberBrick 设备（如 Mini T 坦克、机械臂等）自主能力，将静态硬件转变为智能、互动的伙伴。
 
