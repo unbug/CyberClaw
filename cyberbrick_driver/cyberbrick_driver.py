@@ -5,6 +5,8 @@ import time
 import sys
 import argparse
 
+import os
+
 class CyberBrickDriver:
     """
     CyberBrick Universal Driver using direct hardware pin mapping for ESP32-C3 Remote.
@@ -22,20 +24,78 @@ class CyberBrickDriver:
         self.serial = None
 
     def connect(self):
-        if not self.port:
-            ports = list(serial.tools.list_ports.comports())
-            for p in ports:
-                if "CyberBrick" in p.description or "usbmodem" in p.device:
-                    self.port = p.device
-                    break
-        
-        if not self.port:
-            self.port = "/dev/cu.usbmodem14101"
+        # 1. Try manually provided port (via constructor/CLI)
+        if self.port:
+            pass # Already set
             
-        print(f"Connecting to {self.port} and resetting...")
-        self.serial = serial.Serial(self.port, self.baud, timeout=2)
+        # 2. Try environment variable
+        if not self.port:
+            self.port = os.environ.get("CYBERBRICK_PORT")
+            if self.port:
+                print(f"Using port from CYBERBRICK_PORT: {self.port}")
+
+        # 3. Try cached port
+        cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".port_cache")
+        if not self.port and os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    cached_port = f.read().strip()
+                if os.path.exists(cached_port):
+                    self.port = cached_port
+                    print(f"Using cached port: {self.port}")
+            except:
+                pass
+
+        # 4. Try auto-detection
+        if not self.port:
+            print("Auto-detecting CyberBrick device...")
+            ports = list(serial.tools.list_ports.comports())
+            candidates = []
+            for p in ports:
+                # VID 0x303a / PID 0x1001 is common for ESP32-C3 / CyberBrick
+                if p.vid == 0x303a and p.pid == 0x1001:
+                    candidates.insert(0, p) # High priority
+                elif "CyberBrick" in p.description or "usbmodem" in p.device or "USB Serial" in p.description or "CP210" in p.description:
+                    candidates.append(p)
+            
+            if candidates:
+                self.port = candidates[0].device
+                print(f"Found candidate: {self.port} ({candidates[0].description})")
+                # Save to cache
+                try:
+                    with open(cache_file, "w") as f:
+                        f.write(self.port)
+                except:
+                    pass
         
-        # Hardware reset via DTR/RTS
+        if not self.port:
+            print("❌ Error: Could not detect CyberBrick device.")
+            print("Please specify the port using:")
+            print("  1. Command line argument: --port /dev/tty.xxx")
+            print("  2. Environment variable: export CYBERBRICK_PORT=/dev/tty.xxx")
+            print("\nAvailable ports:")
+            found_ports = list(serial.tools.list_ports.comports())
+            if not found_ports:
+                print("  (No serial ports found)")
+            else:
+                for p in found_ports:
+                    print(f"  - {p.device} ({p.description}) VID={hex(p.vid) if p.vid else 'N/A'} PID={hex(p.pid) if p.pid else 'N/A'}")
+            return False
+            
+        print(f"Connecting to {self.port}...")
+        try:
+            self.serial = serial.Serial(self.port, self.baud, timeout=2)
+        except Exception as e:
+            print(f"❌ Connection failed: {e}")
+            return False
+        
+        # Try soft handshake first (fastest)
+        if self._handshake():
+            print("✅ Connected via Soft Handshake.")
+            return True
+            
+        # If soft handshake fails, try hard reset
+        print("Soft handshake failed. Performing hard reset...")
         self.serial.dtr = False
         self.serial.rts = False
         time.sleep(0.1)
@@ -43,24 +103,33 @@ class CyberBrickDriver:
         self.serial.rts = True
         
         print("Waiting for device to boot...")
-        time.sleep(2)
+        time.sleep(2.0)
         
-        # Break into REPL
+        if self._handshake():
+            print("✅ Connected after Hard Reset.")
+            return True
+            
+        return False
+
+    def _handshake(self):
+        """Attempts to break into REPL and verify connection."""
         print("Breaking into REPL...")
-        for _ in range(10):
+        # Send Ctrl-C multiple times
+        for _ in range(5):
             self.serial.write(b'\x03')
-            time.sleep(0.1)
+            time.sleep(0.05)
         
+        # Flush input
+        self.serial.read(self.serial.in_waiting)
+        
+        # Send a newline to trigger prompt
         self.serial.write(b'\r\n')
-        time.sleep(0.5)
+        time.sleep(0.2)
         
         resp = self.serial.read(self.serial.in_waiting).decode(errors='replace')
         if ">>>" in resp or ">" in resp or "MicroPython" in resp:
-            print("REPL Ready.")
             return True
-        else:
-            print(f"Failed to get REPL. Output: {repr(resp)}")
-            return False
+        return False
 
     def send_repl_code(self, code, reset_at_end=False):
         """
