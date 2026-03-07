@@ -6,9 +6,13 @@
 
 **English** | [中文](./README_CN.md)
 
-[![OpenClaw + CyberBrick Demo](https://img.youtube.com/vi/vC2DL5KLIQE/0.jpg)](https://www.youtube.com/watch?v=vC2DL5KLIQE)
-
 This plugin bridges the gap between [OpenClaw](https://github.com/openclaw) AI agents and [CyberBrick](https://cyberbrick.cn) hardware. It empowers any CyberBrick device (Mini T Tank, robotic arms, etc.) with autonomous capabilities, turning static hardware into intelligent, interactive companions.
+
+## Demo
+
+> Watch OpenClaw and CyberBrick transform a Mini T Tank into a free-roaming bot!
+
+[![OpenClaw + CyberBrick Demo](https://img.youtube.com/vi/vC2DL5KLIQE/0.jpg)](https://www.youtube.com/watch?v=vC2DL5KLIQE)
 
 ## Mission
 
