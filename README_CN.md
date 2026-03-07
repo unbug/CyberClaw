@@ -78,8 +78,8 @@ graph TD
 在使用任何技能之前，请确保您的硬件已准备就绪：
 
 1.  **设备准备**：您需要一个 **CyberBrick 遥控器**（发射端）和一个 **CyberBrick 坦克/机器人**（接收端）。
-2.  **配对**：请使用 **CyberBrick App** 完成遥控器与坦克的配对。如有需要，可参考 [官方指南](https://wiki.bambulab.com/en/cyberbrick)。
-3.  **连接**：将 **CyberBrick 遥控器** 通过 USB 线连接到您的电脑。
+2.  **配对**：请使用 **CyberBrick App** 完成遥控器与坦克的配对。如有需要，可参考 [官方指南](https://wiki.bambulab.com/zh/cyberbrick)。
+3.  **连接**：将 **CyberBrick 遥控器** 通过 USB 线连接到 **运行 OpenClaw 的电脑**。
 4.  **开机**：同时开启遥控器和坦克的电源。确保它们已成功配对（通常 LED 指示灯常亮）。
 
 ### 调用技能
