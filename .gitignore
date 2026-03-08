@@ -1,5 +1,0 @@
-.DS_Store
-.openclaw/
-*.lock
-__pycache__/
-*.pyc
