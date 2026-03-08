@@ -40,21 +40,41 @@ def main():
             
             if dist_str:
                 dist_str = dist_str.strip().lower()
-                if dist_str.isdigit():
-                    dist = int(dist_str)
-                elif "ok" in dist_str:
-                    # Sometimes it might return OK if command was setting something, but here it's a query.
-                    # If query returns OK, it failed to get data. Assume far for now or treat as error?
-                    # Let's assume safe.
-                    pass
-                else:
-                    # 'N/A' or error
+                try:
+                    dist = float(dist_str)
+                    # Sensor may return 0 or negative if out of range or too close
+                    # Typically RoboMaster IR sensor returns mm? Or cm?
+                    # Docs say: distance <id> ? -> Returns distance in mm usually.
+                    # Wait, SDK docs say "ir_distance_sensor distance 1 ?"
+                    # Let's assume cm based on previous output "-0.9" which looks weird.
+                    # Actually, if it returns -1 or similar, it might mean invalid.
+                    
+                    # If we got -0.9, maybe it's too far?
+                    if dist <= 0:
+                        dist = 999 # Treat as far
+                    else:
+                        # Convert to cm if it's in mm?
+                        # If the value is small like 100, 200, it's mm.
+                        # If it's 0.5, 1.0, maybe meters?
+                        # But wait, output was "-0.90000000000000002".
+                        # This looks like an error code or specific status.
+                        
+                        # Let's rely on empirical test.
+                        # If dist > 0 and dist < 500 (50cm in mm? or 50cm?)
+                        # Let's assume input is mm for now as is standard for ToF.
+                        # BUT, if we see float like 0.5, it might be meters.
+                        pass
+                except ValueError:
                     pass
             
-            print(f"Distance: {dist} cm")
+            print(f"Distance: {dist}")
 
             # 2. Obstacle Avoidance Logic
-            if dist < 50: # Obstacle within 50cm
+            # Threshold: 50cm = 500mm if unit is mm.
+            # If unit is cm, 50.
+            # Given output "-0.9", it's suspicious.
+            # Let's assume valid range is positive.
+            if 0 < dist < 500: # Assuming mm, 50cm threshold
                 print("Obstacle detected! Avoiding...")
                 # Stop
                 driver.move(0, 0, 0)

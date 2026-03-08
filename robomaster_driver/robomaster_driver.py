@@ -30,6 +30,11 @@ class RoboMasterDriver:
             if not self.send_command("command"):
                 print("Failed to enter SDK mode.")
                 return False
+            
+            # Enable IR distance sensor measurement
+            # "ir_distance_sensor measure on"
+            self.send_command("ir_distance_sensor measure on")
+            
             return True
         except Exception as e:
             print(f"Connection failed: {e}")
@@ -153,6 +158,71 @@ class RoboMasterDriver:
         """Get battery level."""
         return self.send_command("robot battery ?")
 
+    # --- Sensor Skills ---
+
+    def get_chassis_position(self):
+        """Get chassis position (x, y, z)."""
+        # chassis position ?
+        # Returns: <x> <y> <z>
+        return self.send_command("chassis position ?")
+
+    def get_chassis_speed(self):
+        """Get chassis speed."""
+        # chassis speed ?
+        # Returns: <x> <y> <z> <w1> <w2> <w3> <w4>
+        return self.send_command("chassis speed ?")
+
+    def get_chassis_attitude(self):
+        """Get chassis attitude (pitch, roll, yaw)."""
+        # chassis attitude ?
+        # Returns: <pitch> <roll> <yaw>
+        return self.send_command("chassis attitude ?")
+
+    def get_gimbal_attitude(self):
+        """Get gimbal attitude (pitch, yaw)."""
+        # gimbal attitude ?
+        # Returns: <pitch> <yaw>
+        return self.send_command("gimbal attitude ?")
+
+    def get_ir_distance(self, id=1):
+        """Get IR distance sensor value (cm). ID: 1-4"""
+        # ir_distance_sensor distance <id> ?
+        # Returns: <distance>
+        return self.send_command(f"ir_distance_sensor distance {id} ?")
+
+    def observe(self):
+        """Aggregate all sensor data into a dictionary."""
+        data = {}
+        
+        # Battery
+        bat = self.status()
+        data['battery'] = bat.strip() if bat else "unknown"
+
+        # Position
+        pos = self.get_chassis_position()
+        if pos:
+            parts = pos.split()
+            if len(parts) >= 3:
+                data['position'] = {'x': parts[0], 'y': parts[1], 'z': parts[2]}
+
+        # Attitude
+        att = self.get_chassis_attitude()
+        if att:
+            parts = att.split()
+            if len(parts) >= 3:
+                data['attitude'] = {'pitch': parts[0], 'roll': parts[1], 'yaw': parts[2]}
+
+        # IR Distance (Try 4 sensors)
+        ir_data = {}
+        for i in range(1, 5):
+            dist = self.get_ir_distance(i)
+            if dist and "error" not in dist.lower():
+                ir_data[f'ir_{i}'] = dist.strip()
+        data['ir_distance'] = ir_data
+
+        import json
+        return json.dumps(data, indent=2)
+
 def main():
     parser = argparse.ArgumentParser(description="RoboMaster EP Driver")
     parser.add_argument("--host", default="192.168.1.116", help="Robot IP address")
@@ -180,6 +250,14 @@ def main():
     # Status command
     subparsers.add_parser("status", help="Get status (battery)")
 
+    # Sensor command
+    sensor_parser = subparsers.add_parser("sensor", help="Query sensors")
+    sensor_parser.add_argument("--all", action="store_true", help="Get all sensor data (JSON)")
+    sensor_parser.add_argument("--pos", action="store_true", help="Get chassis position")
+    sensor_parser.add_argument("--speed", action="store_true", help="Get chassis speed")
+    sensor_parser.add_argument("--att", action="store_true", help="Get chassis attitude")
+    sensor_parser.add_argument("--dist", type=int, help="Get IR distance (ID 1-4)")
+
     # Raw command
     raw_parser = subparsers.add_parser("raw", help="Send raw SDK command")
     raw_parser.add_argument("cmd", nargs='+', help="Command string")
@@ -203,6 +281,19 @@ def main():
             driver.fire(args.type, args.count)
         elif args.command == "status":
             driver.status()
+        elif args.command == "sensor":
+            if args.all:
+                print(driver.observe())
+            elif args.pos:
+                driver.get_chassis_position()
+            elif args.speed:
+                driver.get_chassis_speed()
+            elif args.att:
+                driver.get_chassis_attitude()
+            elif args.dist:
+                driver.get_ir_distance(args.dist)
+            else:
+                print(driver.observe()) # Default to all
         elif args.command == "raw":
             cmd_str = " ".join(args.cmd)
             driver.send_command(cmd_str)
