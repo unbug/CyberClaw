@@ -151,6 +151,16 @@ class RoboMasterDriver:
         cmd = f"gimbal move p {pitch} y {yaw} vp {speed_p} vy {speed_y}"
         return self.send_command(cmd)
 
+    def gimbal_to(self, pitch=0, yaw=0, speed_p=20, speed_y=20):
+        """
+        Move gimbal to absolute position.
+        pitch: up/down (degree)
+        yaw: left/right (degree)
+        """
+        # gimbal moveto p <pitch> y <yaw> vp <speed_p> vy <speed_y>
+        cmd = f"gimbal moveto p {pitch} y {yaw} vp {speed_p} vy {speed_y}"
+        return self.send_command(cmd)
+
     def fire(self, type="ir", count=1):
         """
         Fire blaster.

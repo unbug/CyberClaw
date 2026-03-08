@@ -51,7 +51,26 @@ def main():
     try:
         while time.time() - start_time < args.duration:
             # 1. Check sensors (Front distance)
-            # Assuming sensor 1 is front.
+            # Ensure gimbal is centered so we are checking the front!
+            # If we don't center, we might be checking the side while moving forward.
+            # But constantly sending gimbal move might be jittery?
+            # Let's check gimbal attitude first?
+            # Or just send center command periodically?
+            # Or, better: if we are moving forward, we MUST be centered.
+            # Let's enforce it here.
+            # Use 'gimbal_to' for absolute centering!
+            # We want it at 0, 0 quickly (speed 50).
+            # We only send this if we are not already centered? 
+            # To avoid flooding, we can just send it every loop. The robot handles redundant commands usually fine.
+            # But if it interrupts movement...
+            # Actually, gimbal commands run parallel to chassis unless conflicting.
+            # In gimbal_lead mode, moving gimbal moves chassis.
+            # So if we force gimbal to 0, chassis will try to align to 0.
+            # If we are moving forward, we want chassis at 0 relative to itself.
+            
+            # Actually, simply calling gimbal_to(0,0) every loop ensures we look forward.
+            driver.gimbal_to(0, 0, speed_p=50, speed_y=50)
+            
             dist_str = driver.get_ir_distance(1)
             dist = 999 # Default to far
             
