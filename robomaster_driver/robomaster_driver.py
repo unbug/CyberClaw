@@ -21,7 +21,7 @@ class RoboMasterDriver:
 
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5) # 5 seconds timeout
+            self.socket.settimeout(10) # 10 seconds timeout
             print(f"Connecting to {self.host}:{self.port}...")
             self.socket.connect((self.host, self.port))
             print("Connected!")
@@ -33,7 +33,11 @@ class RoboMasterDriver:
             
             # Enable IR distance sensor measurement
             # "ir_distance_sensor measure on"
+            # Note: For EP, it seems we might need to enable specific ports if attached?
+            # But the command "ir_distance_sensor measure on" is global.
             self.send_command("ir_distance_sensor measure on")
+            # Also try to enable specific sensor just in case if using extension module protocol?
+            # But "ir_distance_sensor measure on" is the standard text sdk command.
             
             return True
         except Exception as e:
@@ -77,10 +81,16 @@ class RoboMasterDriver:
             self.socket.send(cmd.encode('utf-8'))
             
             # Receive response
+            # Increase timeout slightly or handle buffer?
+            # RoboMaster might send multiple responses if we send commands too fast?
+            # Or if we have async notifications enabled?
             buf = self.socket.recv(1024)
             resp = buf.decode('utf-8').strip()
             print(f"Response: {resp}")
             return resp
+        except socket.timeout:
+            print("Error sending command: timed out")
+            return None
         except socket.error as e:
             print(f"Error sending command: {e}")
             return None
