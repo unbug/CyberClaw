@@ -9,3 +9,4 @@ venv/
 *.log
 wander.lock
 .port_cache
+.openclaw
