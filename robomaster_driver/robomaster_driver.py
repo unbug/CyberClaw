@@ -161,6 +161,10 @@ class RoboMasterDriver:
         cmd = f"gimbal moveto p {pitch} y {yaw} vp {speed_p} vy {speed_y}"
         return self.send_command(cmd)
 
+    def recenter(self):
+        """Recenter gimbal to default position."""
+        return self.send_command("gimbal recenter")
+
     def fire(self, type="ir", count=1):
         """
         Fire blaster.

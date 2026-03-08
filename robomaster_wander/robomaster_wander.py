@@ -64,12 +64,16 @@ def main():
             # To avoid flooding, we can just send it every loop. The robot handles redundant commands usually fine.
             # But if it interrupts movement...
             # Actually, gimbal commands run parallel to chassis unless conflicting.
-            # In gimbal_lead mode, moving gimbal moves chassis.
-            # So if we force gimbal to 0, chassis will try to align to 0.
-            # If we are moving forward, we want chassis at 0 relative to itself.
-            
-            # Actually, simply calling gimbal_to(0,0) every loop ensures we look forward.
-            driver.gimbal_to(0, 0, speed_p=50, speed_y=50)
+             # In gimbal_lead mode, moving gimbal moves chassis.
+             # So if we force gimbal to 0, chassis will try to align to 0.
+             # If we are moving forward, we want chassis at 0 relative to itself.
+             
+            # Use 'gimbal recenter' which is the official way to center it.
+            # But calling it every loop might be overkill if it's slow.
+            # However, it ensures drift is corrected.
+            # Let's try it.
+            # driver.gimbal_to(0, 0, speed_p=50, speed_y=50)
+            driver.recenter()
             
             dist_str = driver.get_ir_distance(1)
             dist = 999 # Default to far
