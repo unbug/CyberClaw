@@ -1,135 +1,95 @@
 #!/usr/bin/env python3
-import socket
 import sys
-import argparse
-import time
 import os
+import time
+import argparse
+import threading
+
+# Add SDK path to sys.path
+sdk_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../vendor'))
+if sdk_path not in sys.path:
+    sys.path.append(sdk_path)
+
+import robomaster
+from robomaster import robot
 
 class RoboMasterDriver:
-    def __init__(self, host="192.168.1.116", port=40923, mock=False):
-        self.host = host
-        self.port = port
-        self.mock = mock
-        self.socket = None
+    def __init__(self, conn_type="sta", sn=None):
+        self.conn_type = conn_type
+        self.sn = sn
+        self.robot = robot.Robot()
+        self.chassis = None
+        self.gimbal = None
+        self.sensor = None
+        self.blaster = None
+        self.led = None
+        self.connected = False
+        
+        # Sensor Data Cache
+        self.dist_lock = threading.Lock()
+        self.ir_distances = {} # {id: distance}
 
     def connect(self):
-        """Establish connection to RoboMaster EP."""
-        if self.mock:
-            print(f"[MOCK] Connecting to {self.host}:{self.port}...")
-            print("[MOCK] Connected!")
-            return True
-
+        """Establish connection to RoboMaster EP using SDK."""
+        print(f"Connecting to RoboMaster via {self.conn_type}...")
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(10) # 10 seconds timeout
-            print(f"Connecting to {self.host}:{self.port}...")
-            self.socket.connect((self.host, self.port))
-            print("Connected!")
+            self.robot.initialize(conn_type=self.conn_type, sn=self.sn)
+            self.chassis = self.robot.chassis
+            self._gimbal = self.robot.gimbal
+            self.sensor = self.robot.sensor
+            self.blaster = self.robot.blaster
+            self.led = self.robot.led
             
-            # Enter SDK mode
-            if not self.send_command("command"):
-                print("Failed to enter SDK mode.")
-                return False
+            # Subscribe to IR distance sensors
+            # Note: SDK subscription frequency limit applies.
+            self.sensor.sub_distance(freq=10, callback=self._sub_distance_handler)
             
-            # Enable IR distance sensor measurement
-            # "ir_distance_sensor measure on"
-            # Note: For EP, it seems we might need to enable specific ports if attached?
-            # But the command "ir_distance_sensor measure on" is global.
-            self.send_command("ir_distance_sensor measure on")
-            # Also try to enable specific sensor just in case if using extension module protocol?
-            # But "ir_distance_sensor measure on" is the standard text sdk command.
+            # Set default mode to CHASSIS_LEAD (Cruise)
+            self.robot.set_robot_mode(mode=robomaster.robot.CHASSIS_LEAD)
+            self._gimbal.recenter()
             
+            self.connected = True
+            print("Connected! (Mode: CHASSIS_LEAD)")
             return True
         except Exception as e:
             print(f"Connection failed: {e}")
             return False
 
     def disconnect(self):
-        """Exit SDK mode and close connection."""
-        if self.mock:
-            print("[MOCK] Disconnected.")
-            return
-
-        if self.socket:
-            try:
-                # Try to exit SDK mode gracefully
-                self.send_command("quit")
-            except:
-                pass
-            self.socket.close()
-            self.socket = None
+        """Close connection."""
+        if self.connected:
+            self.robot.close()
+            self.connected = False
             print("Disconnected.")
 
-    def send_command(self, cmd):
-        """Send a text command and return the response."""
-        if self.mock:
-            print(f"[MOCK] Sending: {cmd.strip()}")
-            if "battery" in cmd:
-                return "85"
-            return "ok"
-
-        if not self.socket:
-            print("Not connected.")
-            return None
-
-        # Add terminator if missing
-        if not cmd.endswith(';'):
-            cmd += ';'
-
+    def _sub_distance_handler(self, distance_info):
+        """Callback for distance sensor data."""
+        # distance_info is typically a tuple/list of distances?
+        # SDK docs say: sub_distance callback receives distance in mm.
+        # It seems to be a single value for the sensor that triggered it?
+        # Or a list of all sensors?
+        # Actually, `sub_distance` subscribes to ALL TOF sensors usually.
+        # But wait, distance_info structure depends on the robot model.
+        # For EP/S1, it's usually the TOF sensor.
+        # Let's assume index 0 is the front sensor.
         try:
-            print(f"Sending: {cmd.strip()}")
-            self.socket.send(cmd.encode('utf-8'))
-            
-            # Receive response
-            # Increase timeout slightly or handle buffer?
-            # RoboMaster might send multiple responses if we send commands too fast?
-            # Or if we have async notifications enabled?
-            buf = self.socket.recv(1024)
-            resp = buf.decode('utf-8').strip()
-            print(f"Response: {resp}")
-            return resp
-        except socket.timeout:
-            print("Error sending command: timed out")
-            return None
-        except socket.error as e:
-            print(f"Error sending command: {e}")
-            return None
+            # Check if it's a list/tuple
+            if isinstance(distance_info, (list, tuple)):
+                with self.dist_lock:
+                    self.ir_distances[1] = distance_info[0] # Assuming sensor 1 is at index 0
+        except:
+            pass
 
-    # --- High Level Skills ---
-
-    def set_mode(self, mode="chassis_lead"):
+    def move(self, x=0.0, y=0.0, z=0.0, xy_speed=0.8, z_speed=45):
         """
-        Set robot motion mode.
-        mode: 
-            'chassis_lead' (Gimbal follows Chassis? No, wait. 
-                            SDK: chassis_lead -> Gimbal follows Chassis YAW.
-                            SDK: gimbal_lead -> Chassis follows Gimbal YAW.
-                            SDK: free -> Independent.)
-        Docs say:
-        - chassis_lead: Gimbal yaw follows chassis yaw.
-        - gimbal_lead: Chassis yaw follows gimbal yaw.
-        - free: Independent.
-        """
-        # robot mode <mode>
-        # Note: The user requested "chassis follows gimbal", which is likely 'gimbal_lead' in SDK terms?
-        # Let's check docs snippet from earlier.
-        # "chassis_lead; : 将机器人的运动模式设置为“云台跟随底盘模式”" -> Gimbal follows Chassis.
-        # "底盘跟随云台模式" -> Chassis follows Gimbal. This is likely 'gimbal_lead'.
-        # Wait, let's verify if 'gimbal_lead' is the keyword.
-        # Docs usually match enum. Let's assume 'gimbal_lead'.
-        cmd = f"robot mode {mode}"
-        return self.send_command(cmd)
-
-    def move(self, x=0.0, y=0.0, z=0.0, speed_xy=0.5, speed_z=30):
-        """
-        Move chassis relative to current position.
+        Move chassis.
         x: forward/backward (m)
         y: left/right (m)
         z: rotation (degree)
         """
-        # chassis move x <dist_x> y <dist_y> z <degree_z> vxy <speed_xy> vz <speed_z>
-        cmd = f"chassis move x {x} y {y} z {z} vxy {speed_xy} vz {speed_z}"
-        return self.send_command(cmd)
+        if not self.connected: return
+        print(f"Moving: x={x}, y={y}, z={z}, speed={xy_speed}m/s")
+        self.chassis.move(x=x, y=y, z=z, xy_speed=xy_speed, z_speed=z_speed).wait_for_completed()
 
     def speed(self, x=0.0, y=0.0, z=0.0):
         """
@@ -138,213 +98,227 @@ class RoboMasterDriver:
         y: left/right speed (m/s)
         z: rotation speed (degree/s)
         """
-        cmd = f"chassis speed x {x} y {y} z {z}"
-        return self.send_command(cmd)
+        if not self.connected: return
+        self.chassis.drive_speed(x=x, y=y, z=z)
 
-    def gimbal(self, pitch=0, yaw=0, speed_p=20, speed_y=20):
+    def move_gimbal(self, pitch=0, yaw=0, pitch_speed=20, yaw_speed=20):
         """
         Move gimbal relative to current position.
-        pitch: up/down (degree)
-        yaw: left/right (degree)
         """
-        # gimbal move p <pitch> y <yaw> vp <speed_p> vy <speed_y>
-        cmd = f"gimbal move p {pitch} y {yaw} vp {speed_p} vy {speed_y}"
-        return self.send_command(cmd)
+        if not self.connected: return
+        print(f"Gimbal move: p={pitch}, y={yaw}")
+        self._gimbal.move(pitch=pitch, yaw=yaw, pitch_speed=pitch_speed, yaw_speed=yaw_speed).wait_for_completed()
 
-    def gimbal_to(self, pitch=0, yaw=0, speed_p=20, speed_y=20):
+    def move_gimbal_to(self, pitch=0, yaw=0, pitch_speed=20, yaw_speed=20):
         """
         Move gimbal to absolute position.
-        pitch: up/down (degree)
-        yaw: left/right (degree)
         """
-        # gimbal moveto p <pitch> y <yaw> vp <speed_p> vy <speed_y>
-        cmd = f"gimbal moveto p {pitch} y {yaw} vp {speed_p} vy {speed_y}"
-        return self.send_command(cmd)
+        if not self.connected: return
+        print(f"Gimbal to: p={pitch}, y={yaw}")
+        self._gimbal.moveto(pitch=pitch, yaw=yaw, pitch_speed=pitch_speed, yaw_speed=yaw_speed).wait_for_completed()
 
     def recenter(self):
-        """Recenter gimbal to default position."""
-        return self.send_command("gimbal recenter")
+        """Recenter gimbal."""
+        if not self.connected: return
+        print("Recentering gimbal...")
+        self._gimbal.recenter().wait_for_completed()
 
     def fire(self, type="ir", count=1):
         """
         Fire blaster.
-        type: 'ir' (infrared/laser) or 'bead' (water gel)
-        If type is 'ir', fires repeatedly for 'count' seconds (approximate).
-        If type is 'bead', fires 'count' number of shots.
+        type: 'ir' or 'bead'
         """
-        if type == "ir":
-            # For IR, treat 'count' as duration in seconds.
-            # We fire as fast as we can for that duration.
-            start_time = time.time()
-            duration = float(count)
-            shots = 0
-            print(f"Firing IR laser for {duration} seconds...")
-            while time.time() - start_time < duration:
-                # blaster fire type ir cnt 1
-                # Use 'fire_type' instead of 'type' which is more likely consistent with Python SDK
-                self.send_command("blaster fire fire_type ir cnt 1")
-                shots += 1
-                time.sleep(0.1) # Prevent flooding
-            return f"Fired IR approx {shots} times"
-        else:
-            # For bead, treat 'count' as number of shots
-            # Explicitly force type in command string
-            cmd = f"blaster fire fire_type {type} cnt {count}"
-            return self.send_command(cmd)
+        if not self.connected: return
+        print(f"Firing {type}...")
+        self.blaster.fire(fire_type=type, times=int(count))
+        # Wait for fire duration
+        time.sleep(max(1.0, count * 0.5))
 
-    def led(self, r=255, g=255, b=255, effect="on"):
+    def set_led(self, comp="all", r=255, g=255, b=255, effect="on"):
         """
         Set LED effect.
-        effect: on, off, flash, breath, scrolling
         """
-        # led control comp all r <r> g <g> b <b> effect <effect>
-        cmd = f"led control comp all r {r} g {g} b {b} effect {effect}"
-        return self.send_command(cmd)
-
-    def status(self):
-        """Get battery level."""
-        return self.send_command("robot battery ?")
-
-    # --- Sensor Skills ---
-
-    def get_chassis_position(self):
-        """Get chassis position (x, y, z)."""
-        # chassis position ?
-        # Returns: <x> <y> <z>
-        return self.send_command("chassis position ?")
-
-    def get_chassis_speed(self):
-        """Get chassis speed."""
-        # chassis speed ?
-        # Returns: <x> <y> <z> <w1> <w2> <w3> <w4>
-        return self.send_command("chassis speed ?")
-
-    def get_chassis_attitude(self):
-        """Get chassis attitude (pitch, roll, yaw)."""
-        # chassis attitude ?
-        # Returns: <pitch> <roll> <yaw>
-        return self.send_command("chassis attitude ?")
-
-    def get_gimbal_attitude(self):
-        """Get gimbal attitude (pitch, yaw)."""
-        # gimbal attitude ?
-        # Returns: <pitch> <yaw>
-        return self.send_command("gimbal attitude ?")
+        if not self.connected: return
+        print(f"LED: comp={comp}, rgb=({r},{g},{b}), effect={effect}")
+        self.led.set_led(comp=comp, r=r, g=g, b=b, effect=effect)
+        # LED commands are async, give time to process before disconnecting
+        time.sleep(0.5)
 
     def get_ir_distance(self, id=1):
-        """Get IR distance sensor value (cm). ID: 1-4"""
-        # ir_distance_sensor distance <id> ?
-        # Returns: <distance>
-        return self.send_command(f"ir_distance_sensor distance {id} ?")
+        """Get cached IR distance."""
+        with self.dist_lock:
+            return self.ir_distances.get(id, None)
 
-    def observe(self):
-        """Aggregate all sensor data into a dictionary."""
-        data = {}
+    def set_mode(self, mode="free"):
+        """Set robot mode: free, gimbal_lead, chassis_lead"""
+        if not self.connected: return
+        mode_map = {
+            "free": robomaster.robot.FREE,
+            "gimbal_lead": robomaster.robot.GIMBAL_LEAD,
+            "chassis_lead": robomaster.robot.CHASSIS_LEAD
+        }
+        if mode in mode_map:
+            self.robot.set_robot_mode(mode=mode_map[mode])
+
+    def get_system_info(self):
+        """Get robot system information."""
+        if not self.connected: return None
         
-        # Battery
-        bat = self.status()
-        data['battery'] = bat.strip() if bat else "unknown"
+        info = {}
+        
+        # SN
+        try:
+            info['sn'] = self.robot.get_sn()
+        except:
+            info['sn'] = "Unknown"
+            
+        # Version
+        try:
+            info['version'] = self.robot.get_version()
+        except:
+            info['version'] = "Unknown"
+            
+        # Modules presence check (heuristic)
+        info['modules'] = {}
+        
+        # Camera
+        try:
+            # We can't easily check if camera is "plugged in" without streaming, 
+            # but object existence is a good start.
+            if self.robot.camera:
+                info['modules']['camera'] = "Detected"
+            else:
+                info['modules']['camera'] = "Not Detected"
+        except:
+            info['modules']['camera'] = "Error"
 
-        # Position
-        pos = self.get_chassis_position()
-        if pos:
-            parts = pos.split()
-            if len(parts) >= 3:
-                data['position'] = {'x': parts[0], 'y': parts[1], 'z': parts[2]}
+        # Audio (Mic) - Usually implied by camera module on S1/EP
+        # We can try to enable audio stream?
+        info['modules']['microphone'] = "Integrated with Camera"
 
-        # Attitude
-        att = self.get_chassis_attitude()
-        if att:
-            parts = att.split()
-            if len(parts) >= 3:
-                data['attitude'] = {'pitch': parts[0], 'roll': parts[1], 'yaw': parts[2]}
-
-        # IR Distance (Try 4 sensors)
-        ir_data = {}
-        for i in range(1, 5):
-            dist = self.get_ir_distance(i)
-            if dist and "error" not in dist.lower():
-                ir_data[f'ir_{i}'] = dist.strip()
-        data['ir_distance'] = ir_data
-
-        import json
-        return json.dumps(data, indent=2)
+        # Sensor (ToF)
+        try:
+            # Check if sensor object is initialized
+            if self.sensor:
+                info['modules']['tof_sensor'] = "Detected"
+            else:
+                info['modules']['tof_sensor'] = "Not Detected"
+        except:
+            info['modules']['tof_sensor'] = "Error"
+            
+        return info
 
 def main():
-    parser = argparse.ArgumentParser(description="RoboMaster EP Driver")
-    parser.add_argument("--host", default="192.168.1.116", help="Robot IP address")
-    parser.add_argument("--port", type=int, default=40923, help="Robot SDK port")
-    parser.add_argument("--mock", action="store_true", help="Run in mock mode (no hardware connection)")
+    parser = argparse.ArgumentParser(description="RoboMaster EP Driver (SDK)")
+    # Connection args
+    parser.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Move command
-    mv_parser = subparsers.add_parser("move", help="Move chassis")
-    mv_parser.add_argument("x", type=float, help="X distance (m)")
-    mv_parser.add_argument("y", type=float, default=0.0, nargs='?', help="Y distance (m)")
-    mv_parser.add_argument("z", type=float, default=0.0, nargs='?', help="Z rotation (deg)")
+    # Move
+    mv = subparsers.add_parser("move", help="Move chassis")
+    mv.add_argument("x", type=float, help="Forward/Back (m)")
+    mv.add_argument("y", type=float, default=0.0, nargs='?', help="Left/Right (m)")
+    mv.add_argument("z", type=float, default=0.0, nargs='?', help="Rotation (deg)")
 
-    # Gimbal command
-    gim_parser = subparsers.add_parser("gimbal", help="Move gimbal")
-    gim_parser.add_argument("p", type=float, help="Pitch (deg)")
-    gim_parser.add_argument("y", type=float, default=0.0, nargs='?', help="Yaw (deg)")
+    # Shortcuts
+    fw = subparsers.add_parser("forward", help="Move forward")
+    fw.add_argument("dist", type=float, help="Distance in meters")
 
-    # Fire command
-    fire_parser = subparsers.add_parser("fire", help="Fire blaster")
-    fire_parser.add_argument("type", default="ir", nargs='?', choices=['ir', 'bead'], help="Fire type: ir (laser) or bead (water gel)")
-    fire_parser.add_argument("count", type=float, default=1.0, nargs='?', help="For IR: duration in seconds. For Bead: number of shots.")
+    bk = subparsers.add_parser("back", help="Move backward")
+    bk.add_argument("dist", type=float, help="Distance in meters")
 
-    # Status command
-    subparsers.add_parser("status", help="Get status (battery)")
+    lt = subparsers.add_parser("left", help="Turn left")
+    lt.add_argument("angle", type=float, help="Angle in degrees")
 
-    # Sensor command
-    sensor_parser = subparsers.add_parser("sensor", help="Query sensors")
-    sensor_parser.add_argument("--all", action="store_true", help="Get all sensor data (JSON)")
-    sensor_parser.add_argument("--pos", action="store_true", help="Get chassis position")
-    sensor_parser.add_argument("--speed", action="store_true", help="Get chassis speed")
-    sensor_parser.add_argument("--att", action="store_true", help="Get chassis attitude")
-    sensor_parser.add_argument("--dist", type=int, help="Get IR distance (ID 1-4)")
+    rt = subparsers.add_parser("right", help="Turn right")
+    rt.add_argument("angle", type=float, help="Angle in degrees")
+    
+    tn = subparsers.add_parser("turn", help="Turn chassis")
+    tn.add_argument("angle", type=float, help="Angle in degrees (positive=left, negative=right)")
 
-    # Raw command
-    raw_parser = subparsers.add_parser("raw", help="Send raw SDK command")
-    raw_parser.add_argument("cmd", nargs='+', help="Command string")
+    subparsers.add_parser("uturn", help="Turn 180 degrees")
+
+    # Gimbal
+    gim = subparsers.add_parser("gimbal", help="Move gimbal")
+    gim.add_argument("p", type=float)
+    gim.add_argument("y", type=float, default=0.0, nargs='?')
+    gim.add_argument("--abs", action="store_true", help="Absolute positioning")
+
+    # Fire
+    fire = subparsers.add_parser("fire", help="Fire blaster")
+    fire.add_argument("type", default="ir", choices=['ir', 'bead'])
+    fire.add_argument("count", type=int, default=1)
+
+    # Recenter
+    subparsers.add_parser("recenter", help="Recenter gimbal")
+
+    # Sensor
+    sens = subparsers.add_parser("sensor", help="Read sensors")
+    sens.add_argument("--dist", action="store_true", help="Read distance")
+    
+    # LED
+    led_p = subparsers.add_parser("led", help="Control LEDs")
+    led_p.add_argument("--comp", default="all", help="Component: all, top_all, bottom_all, etc.")
+    led_p.add_argument("-r", type=int, default=255, help="Red (0-255)")
+    led_p.add_argument("-g", type=int, default=255, help="Green (0-255)")
+    led_p.add_argument("-b", type=int, default=255, help="Blue (0-255)")
+    led_p.add_argument("--effect", default="on", choices=["on", "off", "flash", "breath", "scrolling"], help="Effect")
+
+    # Info
+    subparsers.add_parser("info", help="Get system info")
 
     args = parser.parse_args()
-
     if not args.command:
         parser.print_help()
         return
 
-    driver = RoboMasterDriver(host=args.host, port=args.port, mock=args.mock)
+    driver = RoboMasterDriver(conn_type=args.conn)
     if not driver.connect():
         sys.exit(1)
 
     try:
         if args.command == "move":
             driver.move(args.x, args.y, args.z)
+        elif args.command == "forward":
+            driver.move(x=args.dist)
+        elif args.command == "back":
+            driver.move(x=-args.dist)
+        elif args.command == "left":
+            driver.move(z=args.angle)
+        elif args.command == "right":
+            driver.move(z=-args.angle)
+        elif args.command == "turn":
+            driver.move(z=args.angle)
+        elif args.command == "uturn":
+            driver.move(z=180)
         elif args.command == "gimbal":
-            driver.gimbal(args.p, args.y)
+            if args.abs:
+                driver.move_gimbal_to(args.p, args.y)
+            else:
+                driver.move_gimbal(args.p, args.y)
         elif args.command == "fire":
             driver.fire(args.type, args.count)
-        elif args.command == "status":
-            driver.status()
+        elif args.command == "recenter":
+            driver.recenter()
         elif args.command == "sensor":
-            if args.all:
-                print(driver.observe())
-            elif args.pos:
-                driver.get_chassis_position()
-            elif args.speed:
-                driver.get_chassis_speed()
-            elif args.att:
-                driver.get_chassis_attitude()
-            elif args.dist:
-                driver.get_ir_distance(args.dist)
-            else:
-                print(driver.observe()) # Default to all
-        elif args.command == "raw":
-            cmd_str = " ".join(args.cmd)
-            driver.send_command(cmd_str)
+            if args.dist:
+                time.sleep(1) # Wait for data
+                print(f"Distance: {driver.get_ir_distance(1)}")
+        elif args.command == "led":
+            driver.set_led(comp=args.comp, r=args.r, g=args.g, b=args.b, effect=args.effect)
+        elif args.command == "info":
+            info = driver.get_system_info()
+            print("\n=== RoboMaster System Info ===")
+            print(f"SN: {info['sn']}")
+            print(f"Version: {info['version']}")
+            print("Modules:")
+            for k, v in info['modules'].items():
+                print(f"  - {k}: {v}")
+            print("==============================\n")
             
+    except KeyboardInterrupt:
+        pass
     finally:
         driver.disconnect()
 

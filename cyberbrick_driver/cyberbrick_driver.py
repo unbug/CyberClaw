@@ -306,182 +306,118 @@ p3.deinit()
 
     def fire(self):
         """
-        Fires the cannon using Pin 6/7.
-        Uses 1000Hz PWM for DC motor.
+        Fires the cannon (Pin 6/7).
         """
         script = """
 from machine import Pin, PWM
 import time
 p6 = PWM(Pin(6), freq=1000)
 p7 = PWM(Pin(7), freq=1000)
-# Forward stroke
 p6.duty(1023)
 p7.duty(0)
 time.sleep(0.5)
-# Reverse stroke
-p6.duty(0)
-p7.duty(1023)
-time.sleep(0.5)
-# Stop
 p6.deinit()
 p7.deinit()
 """
         self.send_repl_code(script)
 
     def stop(self):
-        """
-        Force stop all known pins and return to manual control.
-        """
+        """Stops all motors."""
         script = """
 from machine import Pin, PWM
-for i in [0, 1, 2, 3, 4, 5, 6, 7]:
-    try:
-        p = PWM(Pin(i), freq=50)
-        p.deinit()
-    except:
-        pass
+try:
+    p2 = PWM(Pin(2))
+    p2.deinit()
+except: pass
+try:
+    p3 = PWM(Pin(3))
+    p3.deinit()
+except: pass
+try:
+    p4 = PWM(Pin(4))
+    p4.deinit()
+except: pass
+try:
+    p5 = PWM(Pin(5))
+    p5.deinit()
+except: pass
+try:
+    p6 = PWM(Pin(6))
+    p6.deinit()
+except: pass
+try:
+    p7 = PWM(Pin(7))
+    p7.deinit()
+except: pass
 """
-        self.send_repl_code(script, reset_at_end=True)
+        self.send_repl_code(script)
 
-    def dance(self):
-        """
-        Performs a lively dance sequence with larger amplitudes.
-        """
-        print("Dancing (Lively Version)...")
-        
-        # 1. Big Spin Intro (360-ish)
-        print(">> Intro Spin")
-        self.turn_left(100, 1.5)
-        self.turret(130)
-        self.turn_right(100, 1.5)
-        self.turret(50)
-        
-        # 2. Big Steps (Forward/Back)
-        print(">> Big Steps")
-        self.move_forward(100, 0.8)
-        self.move_backward(100, 0.8)
-        self.move_forward(100, 0.8)
-        self.move_backward(100, 0.8)
-        
-        # 3. Excited Wiggle (Fast but wider than before)
-        print(">> Wiggle")
-        for _ in range(3):
-            self.turn_left(100, 0.6)
-            self.turn_right(100, 0.6)
-            
-        # 4. Head Banging
-        print(">> Head Bang")
-        self.turret(130)
-        time.sleep(0.3)
-        self.turret(50)
-        time.sleep(0.3)
-        self.turret(130)
-        time.sleep(0.3)
-        self.turret(50)
-        
-        # 5. Finale
-        print(">> Finale")
-        self.fire()
-        self.turn_left(100, 2.0) # 360 spin
-        
-        self.stop()
-        print("Dance complete.")
+def main():
+    parser = argparse.ArgumentParser(description="CyberBrick Driver CLI")
+    parser.add_argument("--port", help="Serial port (e.g. /dev/tty.usbmodem14101)")
+    
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+    
+    # Forward
+    p_fwd = subparsers.add_parser("forward", help="Move forward")
+    p_fwd.add_argument("speed", type=int, help="Speed (0-100)")
+    p_fwd.add_argument("duration", type=float, default=2.0, nargs='?', help="Duration (s)")
+    
+    # Backward
+    p_bwd = subparsers.add_parser("backward", help="Move backward")
+    p_bwd.add_argument("speed", type=int, help="Speed (0-100)")
+    p_bwd.add_argument("duration", type=float, default=2.0, nargs='?', help="Duration (s)")
+    
+    # Left
+    p_left = subparsers.add_parser("left", help="Turn left")
+    p_left.add_argument("speed", type=int, help="Speed (0-100)")
+    p_left.add_argument("duration", type=float, default=2.0, nargs='?', help="Duration (s)")
+    
+    # Right
+    p_right = subparsers.add_parser("right", help="Turn right")
+    p_right.add_argument("speed", type=int, help="Speed (0-100)")
+    p_right.add_argument("duration", type=float, default=2.0, nargs='?', help="Duration (s)")
+    
+    # Turret
+    p_turret = subparsers.add_parser("turret", help="Move turret")
+    p_turret.add_argument("angle", type=int, help="Angle (0-180)")
+    
+    # Fire
+    subparsers.add_parser("fire", help="Fire cannon")
+    
+    # Stop
+    subparsers.add_parser("stop", help="Stop all motors")
+    
+    # Raw
+    p_raw = subparsers.add_parser("raw", help="Execute raw MicroPython code")
+    p_raw.add_argument("code", help="MicroPython code string")
 
-    def reset_remote(self):
-        """
-        Soft-resets the remote controller to return to manual mode.
-        """
-        self.send_repl_code("print('Resetting...')", reset_at_end=True)
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return
 
-    def run_test_sequence(self):
-        """
-        Runs a full test sequence of all functions.
-        """
-        print("\n=== STARTING FULL CYBERBRICK TEST SEQUENCE ===")
-        
-        # 1. Forward
-        print("\n1. Forward (80% speed, 2s)")
-        self.move_forward(80, 2.0)
-        time.sleep(1.0)
-        
-        # 2. Backward
-        print("\n2. Backward (80% speed, 2s)")
-        self.move_backward(80, 2.0)
-        time.sleep(1.0)
-        
-        # 3. Turn Left
-        print("\n3. Turn Left (50% speed, 2s)")
-        self.turn_left(50, 2.0)
-        time.sleep(1.0)
-        
-        # 4. Turn Right
-        print("\n4. Turn Right (50% speed, 2s)")
-        self.turn_right(50, 2.0)
-        time.sleep(1.0)
-        
-        # 5. Turret Up
-        print("\n5. Turret Up (Elevation 130)")
-        self.turret(130)
-        time.sleep(1.0)
-        
-        # 6. Turret Down
-        print("\n6. Turret Down (Elevation 50)")
-        self.turret(50)
-        time.sleep(1.0)
-        
-        # 7. Fire
-        print("\n7. Fire (Action: Push-Pull)")
-        self.fire()
-        time.sleep(1.0)
-        
-        # 8. Reset to Manual
-        print("\n8. Finalizing: Stop and Reset to Manual Mode")
-        self.stop()
-        self.reset_remote()
-        
-        print("\n=== FULL TEST COMPLETED SUCCESSFULLY ===")
+    driver = CyberBrickDriver(port=args.port)
+    if not driver.connect():
+        sys.exit(1)
 
-    def close(self):
-        if self.serial:
-            self.serial.close()
+    if args.command == "forward":
+        driver.move_forward(args.speed, args.duration)
+    elif args.command == "backward":
+        driver.move_backward(args.speed, args.duration)
+    elif args.command == "left":
+        driver.turn_left(args.speed, args.duration)
+    elif args.command == "right":
+        driver.turn_right(args.speed, args.duration)
+    elif args.command == "turret":
+        driver.turret(args.angle)
+    elif args.command == "fire":
+        driver.fire()
+    elif args.command == "stop":
+        driver.stop()
+    elif args.command == "raw":
+        driver.send_repl_code(args.code)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["forward", "backward", "left", "right", "turret", "fire", "stop", "reset", "test", "dance"])
-    parser.add_argument("value", type=int, nargs='?', default=0)
-    parser.add_argument("duration", type=float, nargs='?', default=None)
-    parser.add_argument("--port", help="Serial port path")
-    parser.add_argument("--baud", type=int, default=115200)
-    args = parser.parse_args()
-
-    driver = CyberBrickDriver(port=args.port, baud=args.baud)
-    try:
-        if driver.connect():
-            if args.command == "forward":
-                dur = args.duration if args.duration is not None else 2.0
-                driver.move_forward(args.value, dur)
-            elif args.command == "backward":
-                dur = args.duration if args.duration is not None else 2.0
-                driver.move_backward(args.value, dur)
-            elif args.command == "left":
-                dur = args.duration if args.duration is not None else 2.0
-                driver.turn_left(args.value, dur)
-            elif args.command == "right":
-                dur = args.duration if args.duration is not None else 2.0
-                driver.turn_right(args.value, dur)
-            elif args.command == "turret":
-                driver.turret(args.value)
-            elif args.command == "fire":
-                driver.fire()
-            elif args.command == "stop":
-                driver.stop()
-            elif args.command == "reset":
-                driver.reset_remote()
-            elif args.command == "test":
-                driver.run_test_sequence()
-            elif args.command == "dance":
-                driver.dance()
-    except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        driver.close()
+    main()
