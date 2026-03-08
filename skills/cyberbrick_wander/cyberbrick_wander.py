@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 import random
 import time
-import subprocess
 import sys
 import signal
 import os
 import argparse
+import atexit
+import random
+import time
+
+# Import Driver from sibling directory
+# Note: cyberbrick_driver is in ../cyberbrick_driver/cyberbrick_driver.py
+# We need to add parent/sibling to path or assume structure.
+driver_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../cyberbrick_driver'))
+if driver_dir not in sys.path:
+    sys.path.append(driver_dir)
+
+from cyberbrick_driver import CyberBrickDriver
+
+# Initialize global driver instance
+driver = None
 
 # Hyperactive Kid Personality - CyberBrick Wander
 # Features: Fast, Erratic, Exaggerated, Restless
@@ -35,25 +49,66 @@ ACTION_POOL = [
 DRIVER_PATH = os.path.join(CURRENT_DIR, "..", "cyberbrick_driver", "cyberbrick_driver.py")
 
 def run_driver(args):
-    """Executes the cyberbrick_driver.py with given arguments"""
-    cmd = ["python3", DRIVER_PATH] + [str(a) for a in args]
+    """Executes the cyberbrick_driver using the imported class instance."""
+    global driver
+    if driver is None:
+        return
+
+    # args is a list like ["forward", "100", "2.0"]
+    command = args[0]
+    
     try:
-        subprocess.run(cmd, check=False, capture_output=True)
+        if command == "forward":
+            speed = int(args[1])
+            duration = float(args[2])
+            driver.move_forward(speed, duration)
+        elif command == "backward":
+            speed = int(args[1])
+            duration = float(args[2])
+            driver.move_backward(speed, duration)
+        elif command == "left":
+            speed = int(args[1])
+            duration = float(args[2])
+            driver.turn_left(speed, duration)
+        elif command == "right":
+            speed = int(args[1])
+            duration = float(args[2])
+            driver.turn_right(speed, duration)
+        elif command == "turret":
+            angle = int(args[1])
+            driver.turret(angle)
+        elif command == "fire":
+            driver.fire()
+        elif command == "stop":
+            driver.stop()
     except Exception as e:
-        print(f"Error running driver: {e}")
+        print(f"Error executing command {command}: {e}")
+
+def cleanup():
+    """Cleanup lock file on exit."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            # Only remove if it's OUR lock file (PID matches)
+            with open(LOCK_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(LOCK_FILE)
+        except:
+            pass
+    # Stop motors
+    run_driver(["stop"])
 
 def check_lock():
-    """Check if the lock file exists. If not, stop motors and exit."""
+    """Check if we should still be running."""
+    # In PID mode, we don't rely on file existence for stopping.
+    # We rely on SIGTERM. But we can still check if lock file was stolen/deleted?
     if not os.path.exists(LOCK_FILE):
-        print("\n🛑 Stop signal received (Lock file missing). Stopping...")
-        run_driver(["stop"])
-        run_driver(["turret", "90"])
+        print("\n🛑 Lock file missing. Stopping...")
         sys.exit(0)
 
 def signal_handler(sig, frame):
-    """Handle Ctrl+C by removing lock file and stopping."""
-    print("\n🛑 Signal received. Cleaning up...")
-    stop_wander()
+    """Handle signals."""
+    print(f"\n🛑 Signal {sig} received. Stopping...")
     sys.exit(0)
 
 # --- Composite Action Definitions ---
@@ -105,18 +160,39 @@ def circle():
 
 def start_wander():
     """Start the wander loop."""
-    if os.path.exists(LOCK_FILE):
-        print("⚠️ Wander seems to be already running (Lock file exists). Overwriting...")
+    global driver
     
-    # Create lock file
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            # Check if process exists
+            os.kill(pid, 0)
+            print(f"⚠️ Wander script already running (PID {pid}).")
+            sys.exit(1)
+        except OSError:
+            print("⚠️ Stale lock file found. Removing...")
+            os.remove(LOCK_FILE)
+        except ValueError:
+            os.remove(LOCK_FILE)
+
+    # Initialize driver
+    print("Connecting to CyberBrick Driver...")
+    driver = CyberBrickDriver()
+    if not driver.connect():
+        print("❌ Failed to connect to CyberBrick. Exiting.")
+        sys.exit(1)
+
+    # Create lock file with PID
     with open(LOCK_FILE, "w") as f:
         f.write(str(os.getpid()))
     
-    print("👶 Hey! I am a nuclear-powered little tank! Time to wreck havoc! 💥")
-    print(f"Started wandering. Lock file created at: {LOCK_FILE}")
-    print("Run 'python3 cyberbrick_wander.py stop' to stop me.")
-    
+    # Register cleanup
+    atexit.register(cleanup)
+    signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
+
+    print(f"🚀 CyberBrick WANDER started! (PID {os.getpid()})")
     
     while True:
         check_lock()
@@ -158,28 +234,51 @@ def start_wander():
         time.sleep(random.uniform(0.01, 0.1))
 
 def stop_wander():
-    """Stop the wander loop by removing the lock file."""
+    """Stop the wander loop."""
     if os.path.exists(LOCK_FILE):
         try:
-            os.remove(LOCK_FILE)
-            print("✅ Stop signal sent (Lock file removed).")
-            # Force stop driver just in case
-            run_driver(["stop"])
+            with open(LOCK_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            print(f"🛑 Stopping PID {pid}...")
+            os.kill(pid, signal.SIGTERM)
+            
+            # Wait and check
+            time.sleep(1)
+            try:
+                os.kill(pid, 0)
+                print("Force killing...")
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass # Already dead
+                
+            if os.path.exists(LOCK_FILE):
+                os.remove(LOCK_FILE)
         except Exception as e:
-            print(f"Error removing lock file: {e}")
+            print(f"Error stopping: {e}")
+            if os.path.exists(LOCK_FILE):
+                os.remove(LOCK_FILE)
     else:
-        print("⚠️ Not running (Lock file not found).")
-        run_driver(["stop"])
-
-def main():
-    parser = argparse.ArgumentParser(description="CyberBrick Wander Skill")
-    parser.add_argument("command", choices=["start", "stop"], nargs='?', default="start", help="Start or stop wandering")
-    args = parser.parse_args()
-
-    if args.command == "start":
-        start_wander()
-    elif args.command == "stop":
-        stop_wander()
+        print("⚠️ No lock file found. Nothing to stop.")
+    
+    # Force stop motors just in case
+    # Note: stop_wander runs in a separate process, so it needs its own driver instance
+    # if we want to send a stop command. But signal handling in the main process
+    # should handle cleanup().
+    # However, if main process is dead/stuck, we might want to force stop here.
+    try:
+        d = CyberBrickDriver()
+        if d.connect():
+            d.stop()
+            print("✅ CyberBrick stopped via direct command.")
+    except:
+        pass
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="CyberBrick Wander Control")
+    parser.add_argument("--stop", action="store_true", help="Stop the wandering script")
+    args = parser.parse_args()
+
+    if args.stop:
+        stop_wander()
+    else:
+        start_wander()
