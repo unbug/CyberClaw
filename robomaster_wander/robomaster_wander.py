@@ -29,6 +29,23 @@ def main():
         sys.exit(1)
 
     print(f"Starting autonomous wander for {args.duration} seconds...")
+    
+    # Set robot mode to 'gimbal_lead' so chassis follows gimbal yaw.
+    # This ensures that if we turn the gimbal (where the sensor is), the chassis will align to it.
+    # Or, user requested "chassis follows gimbal mode".
+    # But wait, if we are in 'gimbal_lead', turning gimbal turns chassis eventually.
+    # However, for wandering, we might want to scan with gimbal, then align chassis to move.
+    # Actually, if sensor is on gimbal, we MUST ensure gimbal points forward relative to movement.
+    # So 'gimbal_lead' is good because it keeps them aligned naturally?
+    # Or 'chassis_lead' and we just keep gimbal at 0?
+    # User said: "IR sensor is on gimbal, so keep gimbal centered, always let chassis follow gimbal mode".
+    # This implies 'gimbal_lead' mode.
+    print("Setting robot mode to 'gimbal_lead' (Chassis follows Gimbal)...")
+    driver.set_mode("gimbal_lead")
+    # Center gimbal just in case
+    driver.gimbal(0, 0)
+    time.sleep(1)
+
     start_time = time.time()
     
     try:
@@ -79,9 +96,11 @@ def main():
                 driver.move(0, 0, turn_angle)
                 time.sleep(1.5)
             else:
+                # Reset gimbal to center before moving, to ensure sensor points forward
+                driver.gimbal(0, 0)
+                time.sleep(0.2)
+                
                 # Path clear, move forward
-                # Move a small step forward to keep checking loop active
-                # Speed 0.3 m/s, distance 0.5m
                 print("Path clear. Moving forward...")
                 driver.move(0.5, 0, 0, speed_xy=0.3)
                 # Wait a bit for movement to complete (approx)

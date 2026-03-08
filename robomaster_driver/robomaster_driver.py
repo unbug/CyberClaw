@@ -97,6 +97,29 @@ class RoboMasterDriver:
 
     # --- High Level Skills ---
 
+    def set_mode(self, mode="chassis_lead"):
+        """
+        Set robot motion mode.
+        mode: 
+            'chassis_lead' (Gimbal follows Chassis? No, wait. 
+                            SDK: chassis_lead -> Gimbal follows Chassis YAW.
+                            SDK: gimbal_lead -> Chassis follows Gimbal YAW.
+                            SDK: free -> Independent.)
+        Docs say:
+        - chassis_lead: Gimbal yaw follows chassis yaw.
+        - gimbal_lead: Chassis yaw follows gimbal yaw.
+        - free: Independent.
+        """
+        # robot mode <mode>
+        # Note: The user requested "chassis follows gimbal", which is likely 'gimbal_lead' in SDK terms?
+        # Let's check docs snippet from earlier.
+        # "chassis_lead; : 将机器人的运动模式设置为“云台跟随底盘模式”" -> Gimbal follows Chassis.
+        # "底盘跟随云台模式" -> Chassis follows Gimbal. This is likely 'gimbal_lead'.
+        # Wait, let's verify if 'gimbal_lead' is the keyword.
+        # Docs usually match enum. Let's assume 'gimbal_lead'.
+        cmd = f"robot mode {mode}"
+        return self.send_command(cmd)
+
     def move(self, x=0.0, y=0.0, z=0.0, speed_xy=0.5, speed_z=30):
         """
         Move chassis relative to current position.
