@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+import socket
+import sys
+import argparse
+import time
+import os
+
+class RoboMasterDriver:
+    def __init__(self, host="192.168.1.116", port=40923, mock=False):
+        self.host = host
+        self.port = port
+        self.mock = mock
+        self.socket = None
+
+    def connect(self):
+        """Establish connection to RoboMaster EP."""
+        if self.mock:
+            print(f"[MOCK] Connecting to {self.host}:{self.port}...")
+            print("[MOCK] Connected!")
+            return True
+
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5) # 5 seconds timeout
+            print(f"Connecting to {self.host}:{self.port}...")
+            self.socket.connect((self.host, self.port))
+            print("Connected!")
+            
+            # Enter SDK mode
+            if not self.send_command("command"):
+                print("Failed to enter SDK mode.")
+                return False
+            return True
+        except Exception as e:
+            print(f"Connection failed: {e}")
+            return False
+
+    def disconnect(self):
+        """Exit SDK mode and close connection."""
+        if self.mock:
+            print("[MOCK] Disconnected.")
+            return
+
+        if self.socket:
+            try:
+                # Try to exit SDK mode gracefully
+                self.send_command("quit")
+            except:
+                pass
+            self.socket.close()
+            self.socket = None
+            print("Disconnected.")
+
+    def send_command(self, cmd):
+        """Send a text command and return the response."""
+        if self.mock:
+            print(f"[MOCK] Sending: {cmd.strip()}")
+            if "battery" in cmd:
+                return "85"
+            return "ok"
+
+        if not self.socket:
+            print("Not connected.")
+            return None
+
+        # Add terminator if missing
+        if not cmd.endswith(';'):
+            cmd += ';'
+
+        try:
+            print(f"Sending: {cmd.strip()}")
+            self.socket.send(cmd.encode('utf-8'))
+            
+            # Receive response
+            buf = self.socket.recv(1024)
+            resp = buf.decode('utf-8').strip()
+            print(f"Response: {resp}")
+            return resp
+        except socket.error as e:
+            print(f"Error sending command: {e}")
+            return None
+
+    # --- High Level Skills ---
+
+    def move(self, x=0.0, y=0.0, z=0.0, speed_xy=0.5, speed_z=30):
+        """
+        Move chassis relative to current position.
+        x: forward/backward (m)
+        y: left/right (m)
+        z: rotation (degree)
+        """
+        # chassis move x <dist_x> y <dist_y> z <degree_z> vxy <speed_xy> vz <speed_z>
+        cmd = f"chassis move x {x} y {y} z {z} vxy {speed_xy} vz {speed_z}"
+        return self.send_command(cmd)
+
+    def speed(self, x=0.0, y=0.0, z=0.0):
+        """
+        Set chassis speed.
+        x: forward/backward speed (m/s)
+        y: left/right speed (m/s)
+        z: rotation speed (degree/s)
+        """
+        cmd = f"chassis speed x {x} y {y} z {z}"
+        return self.send_command(cmd)
+
+    def gimbal(self, pitch=0, yaw=0, speed_p=20, speed_y=20):
+        """
+        Move gimbal relative to current position.
+        pitch: up/down (degree)
+        yaw: left/right (degree)
+        """
+        # gimbal move p <pitch> y <yaw> vp <speed_p> vy <speed_y>
+        cmd = f"gimbal move p {pitch} y {yaw} vp {speed_p} vy {speed_y}"
+        return self.send_command(cmd)
+
+    def fire(self, type="ir", count=1):
+        """
+        Fire blaster.
+        type: 'ir' (infrared/laser) or 'bead' (water gel)
+        If type is 'ir', fires repeatedly for 'count' seconds (approximate).
+        If type is 'bead', fires 'count' number of shots.
+        """
+        if type == "ir":
+            # For IR, treat 'count' as duration in seconds.
+            # We fire as fast as we can for that duration.
+            start_time = time.time()
+            duration = float(count)
+            shots = 0
+            print(f"Firing IR laser for {duration} seconds...")
+            while time.time() - start_time < duration:
+                # blaster fire type ir cnt 1
+                # Explicitly send 'ir' to avoid ambiguity
+                self.send_command("blaster fire type ir cnt 1")
+                shots += 1
+                time.sleep(0.1) # Prevent flooding
+            return f"Fired IR approx {shots} times"
+        else:
+            # For bead, treat 'count' as number of shots
+            # Explicitly force type in command string
+            cmd = f"blaster fire type {type} cnt {count}"
+            return self.send_command(cmd)
+
+    def led(self, r=255, g=255, b=255, effect="on"):
+        """
+        Set LED effect.
+        effect: on, off, flash, breath, scrolling
+        """
+        # led control comp all r <r> g <g> b <b> effect <effect>
+        cmd = f"led control comp all r {r} g {g} b {b} effect {effect}"
+        return self.send_command(cmd)
+
+    def status(self):
+        """Get battery level."""
+        return self.send_command("robot battery ?")
+
+def main():
+    parser = argparse.ArgumentParser(description="RoboMaster EP Driver")
+    parser.add_argument("--host", default="192.168.1.116", help="Robot IP address")
+    parser.add_argument("--port", type=int, default=40923, help="Robot SDK port")
+    parser.add_argument("--mock", action="store_true", help="Run in mock mode (no hardware connection)")
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Move command
+    mv_parser = subparsers.add_parser("move", help="Move chassis")
+    mv_parser.add_argument("x", type=float, help="X distance (m)")
+    mv_parser.add_argument("y", type=float, default=0.0, nargs='?', help="Y distance (m)")
+    mv_parser.add_argument("z", type=float, default=0.0, nargs='?', help="Z rotation (deg)")
+
+    # Gimbal command
+    gim_parser = subparsers.add_parser("gimbal", help="Move gimbal")
+    gim_parser.add_argument("p", type=float, help="Pitch (deg)")
+    gim_parser.add_argument("y", type=float, default=0.0, nargs='?', help="Yaw (deg)")
+
+    # Fire command
+    fire_parser = subparsers.add_parser("fire", help="Fire blaster")
+    fire_parser.add_argument("type", default="ir", nargs='?', choices=['ir', 'bead'], help="Fire type: ir (laser) or bead (water gel)")
+    fire_parser.add_argument("count", type=float, default=1.0, nargs='?', help="For IR: duration in seconds. For Bead: number of shots.")
+
+    # Status command
+    subparsers.add_parser("status", help="Get status (battery)")
+
+    # Raw command
+    raw_parser = subparsers.add_parser("raw", help="Send raw SDK command")
+    raw_parser.add_argument("cmd", nargs='+', help="Command string")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    driver = RoboMasterDriver(host=args.host, port=args.port, mock=args.mock)
+    if not driver.connect():
+        sys.exit(1)
+
+    try:
+        if args.command == "move":
+            driver.move(args.x, args.y, args.z)
+        elif args.command == "gimbal":
+            driver.gimbal(args.p, args.y)
+        elif args.command == "fire":
+            driver.fire(args.type, args.count)
+        elif args.command == "status":
+            driver.status()
+        elif args.command == "raw":
+            cmd_str = " ".join(args.cmd)
+            driver.send_command(cmd_str)
+            
+    finally:
+        driver.disconnect()
+
+if __name__ == "__main__":
+    main()
