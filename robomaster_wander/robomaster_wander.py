@@ -96,147 +96,94 @@ def main():
 
     print(f"Starting autonomous wander for {args.duration} seconds...")
     
-    # Set robot mode to 'gimbal_lead' so chassis follows gimbal yaw.
-    # This ensures that if we turn the gimbal (where the sensor is), the chassis will align to it.
-    # Or, user requested "chassis follows gimbal mode".
-    # But wait, if we are in 'gimbal_lead', turning gimbal turns chassis eventually.
-    # However, for wandering, we might want to scan with gimbal, then align chassis to move.
-    # Actually, if sensor is on gimbal, we MUST ensure gimbal points forward relative to movement.
-    # So 'gimbal_lead' is good because it keeps them aligned naturally?
-    # Or 'chassis_lead' and we just keep gimbal at 0?
-    # User said: "IR sensor is on gimbal, so keep gimbal centered, always let chassis follow gimbal mode".
-    # This implies 'gimbal_lead' mode.
-    print("Setting robot mode to 'gimbal_lead' (Chassis follows Gimbal)...")
-    driver.set_mode("gimbal_lead")
-    # Center gimbal just in case
-    driver.gimbal(0, 0)
+    # Use 'free' mode so gimbal can scan independently of chassis
+    print("Setting robot mode to 'free' (Independent Gimbal/Chassis)...")
+    driver.set_mode("free")
     time.sleep(1)
 
     start_time = time.time()
     
+    # Current chassis heading relative to start (not really trackable without odometry, 
+    # but we only care about relative turns).
+    # Actually, in 'free' mode:
+    # - gimbal move is relative to gimbal current pos? No, relative to chassis? 
+    #   Wait, 'gimbal move' is relative. 'gimbal moveto' is absolute (relative to chassis front).
+    #   So 0 is always chassis front.
+    
     try:
         while time.time() - start_time < args.duration:
-            # 1. Check sensors (Front distance)
-            # Ensure gimbal is centered so we are checking the front!
-            # If we don't center, we might be checking the side while moving forward.
-            # But constantly sending gimbal move might be jittery?
-            # Let's check gimbal attitude first?
-            # Or just send center command periodically?
-            # Or, better: if we are moving forward, we MUST be centered.
-            # Let's enforce it here.
-            # Use 'gimbal_to' for absolute centering!
-            # We want it at 0, 0 quickly (speed 50).
-            # We only send this if we are not already centered? 
-            # To avoid flooding, we can just send it every loop. The robot handles redundant commands usually fine.
-            # But if it interrupts movement...
-            # Actually, gimbal commands run parallel to chassis unless conflicting.
-             # In gimbal_lead mode, moving gimbal moves chassis.
-             # So if we force gimbal to 0, chassis will try to align to 0.
-             # If we are moving forward, we want chassis at 0 relative to itself.
-             
-            # Actually, simply calling gimbal_to(0,0) every loop ensures we look forward.
-            # But constant recenter might reset PID controller too often and cause jitter.
-            # We only need to ensure it's centered if we were doing something else.
-            # Or maybe just send it periodically (e.g. every 1 sec)?
-            # Or better: enforce it once when we enter "move forward" state.
+            # 1. Continuous Scanning Strategy
+            # Instead of just moving forward, we should proactively scan.
+            # But constantly scanning while moving is hard with one sensor.
+            # Strategy:
+            # - Look Forward (0)
+            # - Look Left (-45)
+            # - Look Right (45)
+            # - (Maybe extreme angles if blocked)
             
-            # Let's remove the constant recenter here and put it in logic branches.
+            # Let's verify front first.
+            driver.gimbal_to(0, 0, speed_p=100, speed_y=100)
+            time.sleep(0.3)
+            dist_front = get_dist(driver)
             
-            dist_str = driver.get_ir_distance(1)
-            dist = 999 # Default to far
+            # If front is clear (> 1m), just go.
+            if dist_front > 1000:
+                print(f"Front clear ({dist_front}). Moving forward...")
+                driver.speed(0.5, 0, 0) # Faster speed
+                time.sleep(0.5) # Move for a bit
+                continue
+                
+            # If front is blocked or somewhat close (< 1m), start scanning for better path.
+            print(f"Front obstacle ({dist_front}). Scanning...")
+            driver.speed(0, 0, 0) # Stop
             
-            if dist_str:
-                dist_str = dist_str.strip().lower()
-                try:
-                    d = float(dist_str)
-                    # If we got -0.9, it likely means out of range (too far) or invalid.
-                    # We treat negative values as safe/far.
-                    if d < 0:
-                        dist = 999 # Treat as far
-                    else:
-                        dist = d
-                except ValueError:
-                    pass
+            # Scan angles: -90 (Left), -45, 0 (already done), 45, 90 (Right)
+            # We can also look behind if trapped? 180?
+            angles = [-90, -45, 45, 90, 180]
+            best_ang = 0
+            max_d = dist_front
             
-            print(f"Distance: {dist}")
-
-            # 2. Obstacle Avoidance Logic
-            # RoboMaster EP IR sensor usually returns mm. 
-            # 50cm = 500mm.
-            # So < 500 is a safe bet for "too close".
-            if 0 < dist < 500: # Obstacle within 500 units (mm)
-                print("Obstacle detected! Avoiding...")
-                # Stop immediately
-                driver.speed(0, 0, 0)
+            for ang in angles:
+                driver.gimbal_to(0, ang, speed_p=50, speed_y=200) # Fast scan
                 time.sleep(0.5)
+                d = get_dist(driver)
+                print(f"Scan {ang}: {d}")
                 
-                # Back up a bit
-                driver.move(-0.2, 0, 0)
-                time.sleep(1)
+                if d > max_d:
+                    max_d = d
+                    best_ang = ang
+            
+            # Decide
+            if max_d > 500: # Found a viable path > 50cm
+                print(f"Found path at {best_ang} (dist {max_d}). Turning...")
                 
-                # Intelligent Scan
-                turn_angle = scan_for_exit(driver)
-                print(f"Turning chassis to best angle: {turn_angle}")
+                # Turn chassis to match best_ang
+                # Note: In free mode, we turn chassis. Gimbal stays? 
+                # No, we want to turn chassis so that 'front' becomes 'best_ang'.
+                # If we turn chassis by 'best_ang', the gimbal (which is at 'best_ang' relative to chassis)
+                # will now be at... wait.
+                # If gimbal is at 90 (right), and we turn chassis 90 right.
+                # The gimbal stays at world-angle? In free mode yes.
+                # So relative to chassis, gimbal becomes 0?
+                # Actually, SDK 'chassis move z' turns the chassis.
+                # If we turn chassis 90, we should also recenter gimbal to 0 relative to new front?
+                # Or just turn chassis, then recenter gimbal.
                 
-                # Turn chassis
-                driver.move(0, 0, turn_angle)
-                time.sleep(1.5)
-                
-                # Reset gimbal to center after turn to look forward
-                driver.recenter()
-                time.sleep(0.5)
+                driver.move(0, 0, best_ang) # Turn chassis
+                time.sleep(1.0)
+                driver.recenter() # Reset gimbal to look forward relative to new chassis
+                time.sleep(0.3)
             else:
-                # Path clear, move forward using velocity control for responsiveness
-                # This allows checking sensors in the loop while moving
-                print(f"Path clear ({dist}). Moving forward...")
-                driver.speed(0.3, 0, 0)
-                
-                # Periodically recenter? Or only if we were not moving forward?
-                # Actually, if we are in 'gimbal_lead', the chassis follows gimbal.
-                # If gimbal drifts, chassis drifts.
-                # It's good to recenter periodically or ensure it's 0.
-                # But let's rely on the recenter after avoidance/random action.
+                # Trapped? Turn around completely or back up.
+                print("Trapped! Backing up...")
+                driver.move(-0.3, 0, 0)
+                time.sleep(1.0)
+                driver.move(0, 0, 180) # Turn 180
+                time.sleep(1.5)
+                driver.recenter()
 
-            # 3. Random Actions
-            if random.random() < 0.1: # Reduced chance (10%) to check sensors more often
-                action = random.choice(['fire', 'gimbal', 'wiggle'])
-                print(f"Performing random action: {action}")
-                
-                if action == 'fire':
-                    # Fire random type
-                    # Keep moving while firing? Maybe safest to stop or just fire.
-                    # Firing doesn't affect movement much.
-                    driver.fire('ir', 1) 
-                
-                elif action == 'gimbal':
-                    # Stop chassis while looking around to be safe?
-                    driver.speed(0, 0, 0)
-                    time.sleep(0.2)
-                    
-                    # Random look
-                    p = random.randint(-20, 20)
-                    y = random.randint(-45, 45)
-                    driver.gimbal(p, y)
-                    time.sleep(0.5)
-                    # Reset
-                    driver.recenter()
-                    time.sleep(0.5)
-                
-                elif action == 'wiggle':
-                    # Stop chassis first
-                    driver.speed(0, 0, 0)
-                    time.sleep(0.2)
-                    
-                    # Shake body
-                    driver.move(0, 0, 30)
-                    time.sleep(0.5)
-                    driver.move(0, 0, -30)
-                    time.sleep(0.5)
-                    
-                    # Reset gimbal
-                    driver.recenter()
-
-            time.sleep(0.1) # Loop rate 10Hz approx
+            # Random wiggle just for fun if bored (only if path was clear)
+            # (Skipped to prioritize navigation)
 
     except KeyboardInterrupt:
         print("Stopping wander...")
