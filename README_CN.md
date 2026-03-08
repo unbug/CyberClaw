@@ -1,6 +1,6 @@
 # CyberBrick Plugin for OpenClaw
 
-<img width="1515" height="520" alt="Image" src="https://github.com/user-attachments/assets/99a1ba2e-eb66-4cfe-9443-f694331bdd1d" />
+<img width="1266" height="485" alt="Image" src="https://github.com/user-attachments/assets/0ea2467c-c2eb-4dac-a087-38ec377392f7" />
 
 **通过 AI 赋予 CyberBrick 设备生命**
 
@@ -125,7 +125,7 @@ graph TD
 
 2.  **克隆仓库**：
     ```bash
-    git clone https://github.com/unbug/CyberBrickClaw.git ~/.openclaw/skills/cyberbrick-claw
+    git clone https://github.com/unbug/CyberClaw.git ~/.openclaw/skills/cyberbrick-claw
     ```
 
 ### 选项 2：Agent 工作区特定安装
@@ -140,7 +140,7 @@ graph TD
 2.  **克隆仓库**：
     ```bash
     mkdir -p skills
-    git clone https://github.com/unbug/CyberBrickClaw.git skills/cyberbrick-claw
+    git clone https://github.com/unbug/CyberClaw.git skills/cyberbrick-claw
     ```
 
 ### 选项 3：开发模式（软链接）

@@ -1,6 +1,6 @@
 # CyberBrick Plugin for OpenClaw
 
-<img width="1515" height="520" alt="Image" src="https://github.com/user-attachments/assets/99a1ba2e-eb66-4cfe-9443-f694331bdd1d" />
+<img width="1266" height="485" alt="Image" src="https://github.com/user-attachments/assets/0ea2467c-c2eb-4dac-a087-38ec377392f7" />
 
 **Giving Life to CyberBrick Devices via AI**
 
@@ -123,9 +123,9 @@ This will install the skills into OpenClaw's global skill directory, making them
     mkdir -p ~/.openclaw/skills
     ```
 
-2.  **Clone the repository**:
+2.1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/unbug/CyberBrickClaw.git ~/.openclaw/skills/cyberbrick-claw
+    git clone https://github.com/unbug/CyberClaw.git ~/.openclaw/skills/cyberbrick-claw
     ```
 
 ### Option 2: Agent Workspace-specific Installation
@@ -140,7 +140,7 @@ If you only want to use these skills in a specific **Agent Workspace** (the proj
 2.  **Clone the repository**:
     ```bash
     mkdir -p skills
-    git clone https://github.com/unbug/CyberBrickClaw.git skills/cyberbrick-claw
+    git clone https://github.com/unbug/CyberClaw.git skills/cyberbrick-claw
     ```
 
 ### Option 3: Development Mode (Symlink)
