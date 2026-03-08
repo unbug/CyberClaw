@@ -12,6 +12,72 @@ sys.path.append(driver_dir)
 
 from robomaster_driver import RoboMasterDriver
 
+def get_dist(driver):
+    """Helper to get safe distance."""
+    dist_str = driver.get_ir_distance(1)
+    dist = 999
+    if dist_str:
+        dist_str = dist_str.strip().lower()
+        try:
+            d = float(dist_str)
+            if d < 0:
+                dist = 999
+            else:
+                dist = d
+        except ValueError:
+            pass
+    return dist
+
+def scan_for_exit(driver):
+    """
+    Intelligent scan:
+    1. Switch to 'free' mode (gimbal independent).
+    2. Scan Left (-60, -30) and Right (30, 60).
+    3. Find direction with max distance.
+    4. Switch back to 'gimbal_lead'.
+    5. Return best angle to turn chassis.
+    """
+    print("Scanning for exit...")
+    driver.set_mode("free")
+    time.sleep(0.5)
+    
+    # Angles to scan: Left 60, Left 30, Right 30, Right 60
+    # Prefer smaller turns if clear? Or max clear?
+    # Let's check: -45, 45, -90, 90
+    scan_angles = [-45, 45, -90, 90]
+    best_angle = 180 # Default to turn around if all blocked
+    max_dist = -1
+    
+    threshold = 500 # 50cm safe distance
+    
+    for ang in scan_angles:
+        # Move gimbal quickly
+        driver.gimbal_to(0, ang, speed_p=50, speed_y=100)
+        time.sleep(0.8) # Wait for move
+        
+        d = get_dist(driver)
+        print(f"Scan {ang} deg: {d}")
+        
+        if d > max_dist:
+            max_dist = d
+            best_angle = ang
+            
+        # If we found a "good enough" path (e.g. > 1m), take it immediately to save time?
+        if d > 1000:
+            print(f"Found clear path at {ang}!")
+            best_angle = ang
+            break
+            
+    # Reset gimbal
+    driver.recenter()
+    time.sleep(0.5)
+    
+    # Switch back
+    driver.set_mode("gimbal_lead")
+    time.sleep(0.2)
+    
+    return best_angle
+
 def main():
     parser = argparse.ArgumentParser(description="RoboMaster Autonomous Wander")
     parser.add_argument("--host", default="192.168.1.116", help="Robot IP address")
@@ -68,12 +134,13 @@ def main():
              # So if we force gimbal to 0, chassis will try to align to 0.
              # If we are moving forward, we want chassis at 0 relative to itself.
              
-            # Use 'gimbal recenter' which is the official way to center it.
-            # But calling it every loop might be overkill if it's slow.
-            # However, it ensures drift is corrected.
-            # Let's try it.
-            # driver.gimbal_to(0, 0, speed_p=50, speed_y=50)
-            driver.recenter()
+            # Actually, simply calling gimbal_to(0,0) every loop ensures we look forward.
+            # But constant recenter might reset PID controller too often and cause jitter.
+            # We only need to ensure it's centered if we were doing something else.
+            # Or maybe just send it periodically (e.g. every 1 sec)?
+            # Or better: enforce it once when we enter "move forward" state.
+            
+            # Let's remove the constant recenter here and put it in logic branches.
             
             dist_str = driver.get_ir_distance(1)
             dist = 999 # Default to far
@@ -81,18 +148,13 @@ def main():
             if dist_str:
                 dist_str = dist_str.strip().lower()
                 try:
-                    dist = float(dist_str)
-                    # Sensor may return 0 or negative if out of range or too close
-                    # Typically RoboMaster IR sensor returns mm? Or cm?
-                    # Docs say: distance <id> ? -> Returns distance in mm usually.
-                    # Wait, SDK docs say "ir_distance_sensor distance 1 ?"
-                    # Let's assume cm based on previous output "-0.9" which looks weird.
-                    # Actually, if it returns -1 or similar, it might mean invalid.
-                    
+                    d = float(dist_str)
                     # If we got -0.9, it likely means out of range (too far) or invalid.
                     # We treat negative values as safe/far.
-                    if dist < 0:
+                    if d < 0:
                         dist = 999 # Treat as far
+                    else:
+                        dist = d
                 except ValueError:
                     pass
             
@@ -112,19 +174,28 @@ def main():
                 driver.move(-0.2, 0, 0)
                 time.sleep(1)
                 
-                # Turn random direction (90 to 180 deg)
-                turn_angle = random.choice([-90, 90, 135, -135])
+                # Intelligent Scan
+                turn_angle = scan_for_exit(driver)
+                print(f"Turning chassis to best angle: {turn_angle}")
+                
+                # Turn chassis
                 driver.move(0, 0, turn_angle)
                 time.sleep(1.5)
                 
                 # Reset gimbal to center after turn to look forward
-                driver.gimbal(0, 0)
+                driver.recenter()
                 time.sleep(0.5)
             else:
                 # Path clear, move forward using velocity control for responsiveness
                 # This allows checking sensors in the loop while moving
                 print(f"Path clear ({dist}). Moving forward...")
                 driver.speed(0.3, 0, 0)
+                
+                # Periodically recenter? Or only if we were not moving forward?
+                # Actually, if we are in 'gimbal_lead', the chassis follows gimbal.
+                # If gimbal drifts, chassis drifts.
+                # It's good to recenter periodically or ensure it's 0.
+                # But let's rely on the recenter after avoidance/random action.
 
             # 3. Random Actions
             if random.random() < 0.1: # Reduced chance (10%) to check sensors more often
@@ -148,7 +219,7 @@ def main():
                     driver.gimbal(p, y)
                     time.sleep(0.5)
                     # Reset
-                    driver.gimbal(0, 0)
+                    driver.recenter()
                     time.sleep(0.5)
                 
                 elif action == 'wiggle':
@@ -163,7 +234,7 @@ def main():
                     time.sleep(0.5)
                     
                     # Reset gimbal
-                    driver.gimbal(0, 0)
+                    driver.recenter()
 
             time.sleep(0.1) # Loop rate 10Hz approx
 
