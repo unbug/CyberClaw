@@ -129,15 +129,15 @@ class RoboMasterDriver:
             print(f"Firing IR laser for {duration} seconds...")
             while time.time() - start_time < duration:
                 # blaster fire type ir cnt 1
-                # Explicitly send 'ir' to avoid ambiguity
-                self.send_command("blaster fire type ir cnt 1")
+                # Use 'fire_type' instead of 'type' which is more likely consistent with Python SDK
+                self.send_command("blaster fire fire_type ir cnt 1")
                 shots += 1
                 time.sleep(0.1) # Prevent flooding
             return f"Fired IR approx {shots} times"
         else:
             # For bead, treat 'count' as number of shots
             # Explicitly force type in command string
-            cmd = f"blaster fire type {type} cnt {count}"
+            cmd = f"blaster fire fire_type {type} cnt {count}"
             return self.send_command(cmd)
 
     def led(self, r=255, g=255, b=255, effect="on"):
