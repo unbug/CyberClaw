@@ -49,32 +49,25 @@ def main():
                     # Let's assume cm based on previous output "-0.9" which looks weird.
                     # Actually, if it returns -1 or similar, it might mean invalid.
                     
-                    # If we got -0.9, maybe it's too far?
-                    if dist <= 0:
+                    # If we got -0.9, it likely means out of range (too far) or invalid.
+                    # We treat negative values as safe/far.
+                    if dist < 0:
                         dist = 999 # Treat as far
-                    else:
-                        # Convert to cm if it's in mm?
-                        # If the value is small like 100, 200, it's mm.
-                        # If it's 0.5, 1.0, maybe meters?
-                        # But wait, output was "-0.90000000000000002".
-                        # This looks like an error code or specific status.
-                        
-                        # Let's rely on empirical test.
-                        # If dist > 0 and dist < 500 (50cm in mm? or 50cm?)
-                        # Let's assume input is mm for now as is standard for ToF.
-                        # BUT, if we see float like 0.5, it might be meters.
-                        pass
                 except ValueError:
                     pass
             
             print(f"Distance: {dist}")
 
             # 2. Obstacle Avoidance Logic
-            # Threshold: 50cm = 500mm if unit is mm.
-            # If unit is cm, 50.
-            # Given output "-0.9", it's suspicious.
-            # Let's assume valid range is positive.
-            if 0 < dist < 500: # Assuming mm, 50cm threshold
+            # RoboMaster EP IR sensor usually returns mm. 
+            # 50cm = 500mm.
+            # But let's double check if it's cm.
+            # If it returns 500, that's 50cm.
+            # If it returns 50, that's 5cm.
+            # Let's set threshold to 500 (assuming mm).
+            # If it's cm, 500cm is 5m, which is also safe to avoid.
+            # So < 500 is a safe bet for "too close".
+            if 0 < dist < 500: # Obstacle within 500 units (mm)
                 print("Obstacle detected! Avoiding...")
                 # Stop
                 driver.move(0, 0, 0)
