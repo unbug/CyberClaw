@@ -78,50 +78,47 @@ def main():
             # 2. Obstacle Avoidance Logic
             # RoboMaster EP IR sensor usually returns mm. 
             # 50cm = 500mm.
-            # But let's double check if it's cm.
-            # If it returns 500, that's 50cm.
-            # If it returns 50, that's 5cm.
-            # Let's set threshold to 500 (assuming mm).
-            # If it's cm, 500cm is 5m, which is also safe to avoid.
             # So < 500 is a safe bet for "too close".
             if 0 < dist < 500: # Obstacle within 500 units (mm)
                 print("Obstacle detected! Avoiding...")
-                # Stop
-                driver.move(0, 0, 0)
+                # Stop immediately
+                driver.speed(0, 0, 0)
+                time.sleep(0.5)
+                
                 # Back up a bit
                 driver.move(-0.2, 0, 0)
                 time.sleep(1)
+                
                 # Turn random direction (90 to 180 deg)
                 turn_angle = random.choice([-90, 90, 135, -135])
                 driver.move(0, 0, turn_angle)
                 time.sleep(1.5)
-            else:
-                # Reset gimbal to center before moving, to ensure sensor points forward
-                driver.gimbal(0, 0)
-                time.sleep(0.2)
                 
-                # Path clear, move forward
-                print("Path clear. Moving forward...")
-                driver.move(0.5, 0, 0, speed_xy=0.3)
-                # Wait a bit for movement to complete (approx)
-                time.sleep(1.5)
+                # Reset gimbal to center after turn to look forward
+                driver.gimbal(0, 0)
+                time.sleep(0.5)
+            else:
+                # Path clear, move forward using velocity control for responsiveness
+                # This allows checking sensors in the loop while moving
+                print(f"Path clear ({dist}). Moving forward...")
+                driver.speed(0.3, 0, 0)
 
             # 3. Random Actions
-            if random.random() < 0.2: # 20% chance
+            if random.random() < 0.1: # Reduced chance (10%) to check sensors more often
                 action = random.choice(['fire', 'gimbal', 'wiggle'])
                 print(f"Performing random action: {action}")
                 
                 if action == 'fire':
                     # Fire random type
-                    ft = random.choice(['ir', 'bead'])
-                    # For safety in room, maybe prefer IR? 
-                    # User asked to test, so let's do mostly IR, rarely bead?
-                    # Let's stick to IR for safety unless user specified. 
-                    # User said "fire", implying both.
-                    # Let's fire IR to be safe for walls.
+                    # Keep moving while firing? Maybe safest to stop or just fire.
+                    # Firing doesn't affect movement much.
                     driver.fire('ir', 1) 
                 
                 elif action == 'gimbal':
+                    # Stop chassis while looking around to be safe?
+                    driver.speed(0, 0, 0)
+                    time.sleep(0.2)
+                    
                     # Random look
                     p = random.randint(-20, 20)
                     y = random.randint(-45, 45)
@@ -129,19 +126,28 @@ def main():
                     time.sleep(0.5)
                     # Reset
                     driver.gimbal(0, 0)
+                    time.sleep(0.5)
                 
                 elif action == 'wiggle':
+                    # Stop chassis first
+                    driver.speed(0, 0, 0)
+                    time.sleep(0.2)
+                    
                     # Shake body
                     driver.move(0, 0, 30)
                     time.sleep(0.5)
                     driver.move(0, 0, -30)
+                    time.sleep(0.5)
+                    
+                    # Reset gimbal
+                    driver.gimbal(0, 0)
 
-            time.sleep(0.1)
+            time.sleep(0.1) # Loop rate 10Hz approx
 
     except KeyboardInterrupt:
         print("Stopping wander...")
     finally:
-        driver.move(0, 0, 0) # Stop
+        driver.speed(0, 0, 0) # Stop velocity
         driver.disconnect()
         print("Wander finished.")
 
