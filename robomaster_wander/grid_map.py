@@ -2,7 +2,7 @@ import math
 import numpy as np
 
 class GridMapper:
-    def __init__(self, width_m=10.0, height_m=10.0, resolution=0.1):
+    def __init__(self, width_m=10.0, height_m=10.0, resolution=0.1, max_range_m=2.0):
         """
         Simple Occupancy Grid Mapper
         width_m, height_m: Map size in meters
@@ -13,6 +13,7 @@ class GridMapper:
         self.height = int(height_m / resolution)
         self.center_x = self.width // 2
         self.center_y = self.height // 2
+        self.max_range_m = max_range_m
         
         # 0.5 = unknown, 0.0 = free, 1.0 = occupied
         self.map = np.full((self.width, self.height), 0.5)
@@ -35,9 +36,8 @@ class GridMapper:
         # Calculate sensor global angle
         global_angle = robot_yaw + sensor_angle
         
-        # Max reliable range for ToF (e.g. 2.0m)
-        max_range = 2.0
-        
+        max_range = self.max_range_m
+
         if distance_m is None or distance_m > max_range:
             meas_dist = max_range
             hit = False

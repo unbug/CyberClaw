@@ -17,6 +17,87 @@ class RoboMasterDriver:
     def __init__(self, conn_type="sta", sn=None):
         self.conn_type = conn_type
         self.sn = sn
+        self.robot = None
+        self.chassis = None
+        self.gimbal = None
+        self.sensor = None
+        self.blaster = None
+        self.led = None
+        self.connected = False
+
+        self._connect_lock = threading.Lock()
+        
+        # Sensor Data Cache
+        self.dist_lock = threading.Lock()
+        self.ir_distances = {} # {id: distance}
+
+    def connect(self, retries=8, retry_delay_s=2.0):
+        """Establish connection to RoboMaster EP using SDK."""
+        with self._connect_lock:
+            if self.connected and self.robot:
+                return True
+
+            last_err = None
+            for i in range(max(1, int(retries))):
+                print(f"Connecting to RoboMaster via {self.conn_type}... ({i+1}/{retries})")
+                try:
+                    self._reset_robot_instance()
+                    self.robot.initialize(conn_type=self.conn_type, sn=self.sn)
+                    self.chassis = self.robot.chassis
+                    self.gimbal = self.robot.gimbal
+                    self.sensor = self.robot.sensor
+                    self.blaster = self.robot.blaster
+                    self.led = self.robot.led
+
+                    self.sensor.sub_distance(freq=10, callback=self._sub_distance_handler)
+                    self.robot.set_robot_mode(mode=robomaster.robot.CHASSIS_LEAD)
+                    self.gimbal.recenter()
+
+                    self.connected = True
+                    print("Connected! (Mode: CHASSIS_LEAD)")
+                    return True
+                except Exception as e:
+                    last_err = e
+                    self.connected = False
+                    try:
+                        if self.robot:
+                            self.robot.close()
+                    except Exception:
+                        pass
+                    if i < retries - 1:
+                        time.sleep(retry_delay_s)
+
+            print(f"Connection failed: {last_err}")
+            return False
+
+    def disconnect(self):
+        """Close connection."""
+        with self._connect_lock:
+            if self.connected:
+                try:
+                    if self.chassis:
+                        self.chassis.drive_speed(x=0, y=0, z=0)
+                except Exception:
+                    pass
+                try:
+                    if self.robot:
+                        self.robot.close()
+                except Exception:
+                    pass
+                self.connected = False
+                self.chassis = None
+                self.gimbal = None
+                self.sensor = None
+                self.blaster = None
+                self.led = None
+                print("Disconnected.")
+
+    def _reset_robot_instance(self):
+        try:
+            if self.robot:
+                self.robot.close()
+        except Exception:
+            pass
         self.robot = robot.Robot()
         self.chassis = None
         self.gimbal = None
@@ -24,43 +105,21 @@ class RoboMasterDriver:
         self.blaster = None
         self.led = None
         self.connected = False
-        
-        # Sensor Data Cache
-        self.dist_lock = threading.Lock()
-        self.ir_distances = {} # {id: distance}
 
-    def connect(self):
-        """Establish connection to RoboMaster EP using SDK."""
-        print(f"Connecting to RoboMaster via {self.conn_type}...")
+    def _reconnect(self):
+        self.disconnect()
+        return self.connect()
+
+    def _call_with_reconnect(self, fn, *args, **kwargs):
+        if not self.connected:
+            if not self.connect():
+                raise RuntimeError("Not connected")
         try:
-            self.robot.initialize(conn_type=self.conn_type, sn=self.sn)
-            self.chassis = self.robot.chassis
-            self._gimbal = self.robot.gimbal
-            self.sensor = self.robot.sensor
-            self.blaster = self.robot.blaster
-            self.led = self.robot.led
-            
-            # Subscribe to IR distance sensors
-            # Note: SDK subscription frequency limit applies.
-            self.sensor.sub_distance(freq=10, callback=self._sub_distance_handler)
-            
-            # Set default mode to CHASSIS_LEAD (Cruise)
-            self.robot.set_robot_mode(mode=robomaster.robot.CHASSIS_LEAD)
-            self._gimbal.recenter()
-            
-            self.connected = True
-            print("Connected! (Mode: CHASSIS_LEAD)")
-            return True
-        except Exception as e:
-            print(f"Connection failed: {e}")
-            return False
-
-    def disconnect(self):
-        """Close connection."""
-        if self.connected:
-            self.robot.close()
-            self.connected = False
-            print("Disconnected.")
+            return fn(*args, **kwargs)
+        except Exception:
+            if not self._reconnect():
+                raise
+            return fn(*args, **kwargs)
 
     def _sub_distance_handler(self, distance_info):
         """Callback for distance sensor data."""
@@ -87,9 +146,10 @@ class RoboMasterDriver:
         y: left/right (m)
         z: rotation (degree)
         """
-        if not self.connected: return
-        print(f"Moving: x={x}, y={y}, z={z}, speed={xy_speed}m/s")
-        self.chassis.move(x=x, y=y, z=z, xy_speed=xy_speed, z_speed=z_speed).wait_for_completed()
+        def _do():
+            print(f"Moving: x={x}, y={y}, z={z}, speed={xy_speed}m/s")
+            return self.chassis.move(x=x, y=y, z=z, xy_speed=xy_speed, z_speed=z_speed).wait_for_completed()
+        return self._call_with_reconnect(_do)
 
     def speed(self, x=0.0, y=0.0, z=0.0):
         """
@@ -98,51 +158,55 @@ class RoboMasterDriver:
         y: left/right speed (m/s)
         z: rotation speed (degree/s)
         """
-        if not self.connected: return
-        self.chassis.drive_speed(x=x, y=y, z=z)
+        def _do():
+            return self.chassis.drive_speed(x=x, y=y, z=z)
+        return self._call_with_reconnect(_do)
 
     def move_gimbal(self, pitch=0, yaw=0, pitch_speed=20, yaw_speed=20):
         """
         Move gimbal relative to current position.
         """
-        if not self.connected: return
-        print(f"Gimbal move: p={pitch}, y={yaw}")
-        self._gimbal.move(pitch=pitch, yaw=yaw, pitch_speed=pitch_speed, yaw_speed=yaw_speed).wait_for_completed()
+        def _do():
+            print(f"Gimbal move: p={pitch}, y={yaw}")
+            return self.gimbal.move(pitch=pitch, yaw=yaw, pitch_speed=pitch_speed, yaw_speed=yaw_speed).wait_for_completed()
+        return self._call_with_reconnect(_do)
 
     def move_gimbal_to(self, pitch=0, yaw=0, pitch_speed=20, yaw_speed=20):
         """
         Move gimbal to absolute position.
         """
-        if not self.connected: return
-        print(f"Gimbal to: p={pitch}, y={yaw}")
-        self._gimbal.moveto(pitch=pitch, yaw=yaw, pitch_speed=pitch_speed, yaw_speed=yaw_speed).wait_for_completed()
+        def _do():
+            print(f"Gimbal to: p={pitch}, y={yaw}")
+            return self.gimbal.moveto(pitch=pitch, yaw=yaw, pitch_speed=pitch_speed, yaw_speed=yaw_speed).wait_for_completed()
+        return self._call_with_reconnect(_do)
 
     def recenter(self):
         """Recenter gimbal."""
-        if not self.connected: return
-        print("Recentering gimbal...")
-        self._gimbal.recenter().wait_for_completed()
+        def _do():
+            print("Recentering gimbal...")
+            return self.gimbal.recenter().wait_for_completed()
+        return self._call_with_reconnect(_do)
 
     def fire(self, type="ir", count=1):
         """
         Fire blaster.
         type: 'ir' or 'bead'
         """
-        if not self.connected: return
-        print(f"Firing {type}...")
-        self.blaster.fire(fire_type=type, times=int(count))
-        # Wait for fire duration
-        time.sleep(max(1.0, count * 0.5))
+        def _do():
+            print(f"Firing {type}...")
+            self.blaster.fire(fire_type=type, times=int(count))
+            time.sleep(max(1.0, count * 0.5))
+        return self._call_with_reconnect(_do)
 
     def set_led(self, comp="all", r=255, g=255, b=255, effect="on"):
         """
         Set LED effect.
         """
-        if not self.connected: return
-        print(f"LED: comp={comp}, rgb=({r},{g},{b}), effect={effect}")
-        self.led.set_led(comp=comp, r=r, g=g, b=b, effect=effect)
-        # LED commands are async, give time to process before disconnecting
-        time.sleep(0.5)
+        def _do():
+            print(f"LED: comp={comp}, rgb=({r},{g},{b}), effect={effect}")
+            self.led.set_led(comp=comp, r=r, g=g, b=b, effect=effect)
+            time.sleep(0.5)
+        return self._call_with_reconnect(_do)
 
     def get_ir_distance(self, id=1):
         """Get cached IR distance."""
@@ -151,18 +215,19 @@ class RoboMasterDriver:
 
     def set_mode(self, mode="free"):
         """Set robot mode: free, gimbal_lead, chassis_lead"""
-        if not self.connected: return
         mode_map = {
             "free": robomaster.robot.FREE,
             "gimbal_lead": robomaster.robot.GIMBAL_LEAD,
             "chassis_lead": robomaster.robot.CHASSIS_LEAD
         }
         if mode in mode_map:
-            self.robot.set_robot_mode(mode=mode_map[mode])
+            return self._call_with_reconnect(self.robot.set_robot_mode, mode=mode_map[mode])
 
     def get_system_info(self):
         """Get robot system information."""
-        if not self.connected: return None
+        if not self.connected:
+            if not self.connect():
+                return None
         
         info = {}
         

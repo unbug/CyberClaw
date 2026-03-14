@@ -4,8 +4,8 @@ import time
 import math
 import signal
 import threading
-import numpy as np
 import atexit
+from collections import deque
 
 # Lock file path
 LOCK_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'wander.lock'))
@@ -26,6 +26,15 @@ except ImportError:
     from grid_map import GridMapper
 
 import matplotlib.pyplot as plt
+
+MAX_TOF_RANGE_M = 2.0
+DIST_STALE_S = 1.0
+TELEMETRY_DROP_S = 3.5
+CRUISE_DIST_MIN_M = 0.6
+CRUISE_DIST_MAX_M = 1.8
+CRUISE_SPEED_MIN = 0.12
+CRUISE_SPEED_MAX = 0.45
+EMERGENCY_BRAKE_DIST_M = 0.5
 
 class Speaker:
     """Helper for playing sounds."""
@@ -96,68 +105,6 @@ class LedController:
         except Exception as e:
             print(f"⚠️ LED Error: {e}")
 
-class PotentialFieldPlanner:
-    """
-    Standalone Potential Field Planner implementation.
-    """
-    def __init__(self, kp=5.0, eta=50.0):
-        self.KP = kp  # Attractive Potential Gain
-        self.ETA = eta # Repulsive Potential Gain
-
-    def calculate_force(self, rx, ry, gx, gy, ox, oy, robot_radius=0.3):
-        """
-        Calculate the potential field force at robot position (rx, ry).
-        Target: (gx, gy)
-        Obstacles: ox, oy (lists of coordinates)
-        Returns: (fx, fy) vector
-        """
-        # Calculate Attractive Force (Gradient of U_att = 0.5 * KP * dist)
-        # F_att = -Grad(U_att) = KP * (goal - pos)
-        dist_g = np.hypot(gx - rx, gy - ry)
-        if dist_g == 0:
-            fax, fay = 0, 0
-        else:
-            # Normalized direction * KP
-            # Or proportional to distance? Usually proportional.
-            # F = KP * (pg - p)
-            fax = self.KP * (gx - rx)
-            fay = self.KP * (gy - ry)
-            
-            # Clamp attractive force to avoid overspeeding
-            # if dist_g > 1.0:
-            #     fax = fax / dist_g
-            #     fay = fay / dist_g
-            # Actually, standard APF uses F = KP * dist * unit_vec = KP * (pg - p)
-            # which means further away = stronger force.
-            # But we want constant speed "cruise" usually.
-            # Let's normalize it to just provide direction.
-            fax = fax / dist_g * self.KP
-            fay = fay / dist_g * self.KP
-
-        # Calculate Repulsive Force
-        # U_rep = 0.5 * ETA * (1/d - 1/rr)^2 if d <= rr
-        # F_rep = ETA * (1/d - 1/rr) * (1/d^2) * Grad(d)
-        
-        frx, fry = 0.0, 0.0
-        rr = robot_radius + 1.0 # Detection range
-        
-        for i in range(len(ox)):
-            dx = rx - ox[i]
-            dy = ry - oy[i]
-            d = np.hypot(dx, dy)
-            
-            if d <= rr:
-                if d <= 0.1: d = 0.1
-                # Magnitude
-                mag = self.ETA * (1.0/d - 1.0/rr) * (1.0 / (d*d))
-                
-                # Direction: Away from obstacle
-                # vec = (rx - ox, ry - oy) / d
-                frx += mag * (dx / d)
-                fry += mag * (dy / d)
-                
-        return fax + frx, fay + fry
-
 class SlamPatrol:
     def __init__(self, conn_type="sta", verbose=False):
         self.conn_type = conn_type
@@ -174,16 +121,17 @@ class SlamPatrol:
             robomaster.logger.setLevel(logging.INFO)
             print("SDK Console Logging Enabled.")
             
-        self.robot = robot.Robot()
+        self.robot = None
         self.chassis = None
         self.gimbal = None
         self.sensor = None
+        self.camera = None
+        self._connect_lock = threading.Lock()
         
         self.running = True
-        self.mapper = GridMapper(width_m=20.0, height_m=20.0, resolution=0.1)
-        self.planner = PotentialFieldPlanner()
-        self.speaker = Speaker(self.robot)
-        self.led_ctl = LedController(self.robot)
+        self.mapper = GridMapper(width_m=20.0, height_m=20.0, resolution=0.1, max_range_m=MAX_TOF_RANGE_M)
+        self.speaker = None
+        self.led_ctl = None
         
         # State
         self.x = 0.0
@@ -196,9 +144,21 @@ class SlamPatrol:
         # Sensor
         self.last_dist = None
         self.last_dist_time = 0
+        self.last_pos_time = 0
         
         # Vision
         self.visual_obstacles = [] # List of (angle_rad, dist_m) relative to gimbal center
+        self.ai_obstacles = []
+        self.last_ai_time = 0
+        self._edge_block_hist = deque(maxlen=5)
+        self._last_edge_check_t = 0.0
+        self.camera_stream_enabled = False
+        self._unstick_side = 1
+        self._unstick_attempts = 0
+        self._unstick_window_t = 0.0
+        self._last_unstick_t = 0.0
+        self._action_fail_count = 0
+        self._action_fail_window_t = 0.0
         
         self.lock = threading.Lock()
         
@@ -213,6 +173,109 @@ class SlamPatrol:
         self.fig, self.ax = plt.subplots()
         self.img = None
         plt.ion() # Interactive mode
+
+    def _cruise_speed(self, dist_m):
+        if dist_m is None:
+            return 0.0
+        d = max(CRUISE_DIST_MIN_M, min(CRUISE_DIST_MAX_M, dist_m))
+        t = (d - CRUISE_DIST_MIN_M) / (CRUISE_DIST_MAX_M - CRUISE_DIST_MIN_M)
+        return CRUISE_SPEED_MIN + t * (CRUISE_SPEED_MAX - CRUISE_SPEED_MIN)
+
+    def _visual_obstacles_snapshot(self):
+        with self.lock:
+            return list(self.visual_obstacles) + list(self.ai_obstacles)
+
+    def _angle_penalty_distance(self, angle_rad, default_dist):
+        effective = default_dist
+        obs = self._visual_obstacles_snapshot()
+        if not obs:
+            return effective
+        for oa, od in obs:
+            if od is None:
+                continue
+            if od > MAX_TOF_RANGE_M + 0.5:
+                continue
+            da = abs((oa - angle_rad + math.pi) % (2 * math.pi) - math.pi)
+            if da <= math.radians(20):
+                effective = min(effective, max(0.0, od - 0.2))
+        return effective
+
+    def _reset_robot_instance(self):
+        try:
+            if self.robot:
+                self.robot.close()
+        except Exception:
+            pass
+
+        self.robot = robot.Robot()
+        self.chassis = None
+        self.gimbal = None
+        self.sensor = None
+        self.camera = None
+        self.camera_stream_enabled = False
+        self.speaker = Speaker(self.robot)
+        self.led_ctl = LedController(self.robot)
+
+    def _note_action_failure(self):
+        now = time.time()
+        if now - self._action_fail_window_t > 10.0:
+            self._action_fail_window_t = now
+            self._action_fail_count = 0
+        self._action_fail_count += 1
+        if self._action_fail_count >= 3:
+            raise RuntimeError("Control channel unresponsive")
+
+    def _try_move(self, x=0.0, y=0.0, z=0.0, xy_speed=0.6, z_speed=90, timeout=6, fatal_on_fail=False):
+        try:
+            action = self.chassis.move(x=x, y=y, z=z, xy_speed=xy_speed, z_speed=z_speed)
+            ok = action.wait_for_completed(timeout=timeout)
+            if not ok:
+                self._note_action_failure()
+                if fatal_on_fail:
+                    raise RuntimeError("Move Timeout")
+            return bool(ok)
+        except Exception:
+            self._note_action_failure()
+            if fatal_on_fail:
+                raise
+            return False
+
+    def _unstick(self):
+        now = time.time()
+        if now - self._unstick_window_t > 30.0:
+            self._unstick_window_t = now
+            self._unstick_attempts = 0
+        self._unstick_attempts += 1
+        self._last_unstick_t = now
+
+        self.chassis.drive_speed(x=0, y=0, z=0)
+        time.sleep(0.15)
+
+        side = self._unstick_side
+        self._unstick_side *= -1
+
+        back = 0.25
+        strafe = 0.35
+        turn = 35 * side
+        if self._unstick_attempts == 2:
+            back = 0.35
+            strafe = 0.45
+            turn = 90 * side
+        elif self._unstick_attempts >= 3:
+            back = 0.45
+            strafe = 0.55
+            turn = 180
+
+        ok = self._try_move(x=-back, xy_speed=0.6, timeout=5)
+        if not ok:
+            return False
+
+        ok = self._try_move(y=strafe * side, xy_speed=0.6, timeout=6)
+        if not ok:
+            return False
+
+        ok = self._try_move(z=turn, z_speed=120, timeout=8)
+        return bool(ok)
 
     def create_lock_file(self):
         if os.path.exists(LOCK_FILE):
@@ -242,7 +305,7 @@ class SlamPatrol:
             os.remove(LOCK_FILE)
         self.stop()
 
-    def stop_signal(self, signum, frame):
+    def stop_signal(self, signum, _frame):
         print(f"Received signal {signum}. Stopping...")
         self.running = False
         self.cleanup()
@@ -264,6 +327,9 @@ class SlamPatrol:
         print("Initializing SLAM Patrol...")
         while self.running:
             try:
+                with self._connect_lock:
+                    self._reset_robot_instance()
+
                 # Try connecting
                 print(f"Connecting via {self.conn_type}...")
                 self.robot.initialize(conn_type=self.conn_type)
@@ -272,9 +338,13 @@ class SlamPatrol:
                 self.sensor = self.robot.sensor
                 self.camera = self.robot.camera
                 
-                # Start Camera
-                print("Starting Camera Stream...")
-                self.camera.start_video_stream(display=False)
+                self.camera_stream_enabled = False
+                if self.conn_type in ("ap", "rndis"):
+                    print("Starting Camera Stream...")
+                    self.camera.start_video_stream(display=False)
+                    self.camera_stream_enabled = True
+                else:
+                    print("Camera Stream Disabled for conn_type=sta")
                 
                 # Subscriptions
                 self.chassis.sub_position(freq=20, callback=self.cb_pos)
@@ -287,6 +357,13 @@ class SlamPatrol:
                     print("Enabling Vision Detection (Person, Marker)...")
                     self.robot.vision.sub_detect_info(name="person", callback=self.cb_vision_person)
                     self.robot.vision.sub_detect_info(name="marker", callback=self.cb_vision_marker)
+
+                try:
+                    if self.robot.ai_module:
+                        print("Enabling AI Module Detection...")
+                        self.robot.ai_module.sub_ai_event(callback=self.cb_ai_event)
+                except Exception:
+                    pass
                 
                 # Armor Hit Detection
                 if self.robot.armor:
@@ -302,11 +379,16 @@ class SlamPatrol:
                 self.gimbal.recenter().wait_for_completed()
                 
                 # Re-init LED Controller with fresh robot instance
+                self.speaker = Speaker(self.robot)
                 self.led_ctl = LedController(self.robot)
                 
                 print("✅ Robot Connected (CHASSIS_LEAD Mode).")
                 self.speaker.play(robomaster.robot.SOUND_ID_RECOGNIZED)
                 self.led_ctl.set_state("CRUISE", force=True)
+                with self.lock:
+                    now = time.time()
+                    self.last_dist_time = now
+                    self.last_pos_time = now
                 return True
             except Exception as e:
                 print(f"❌ Connection failed: {e}")
@@ -337,6 +419,7 @@ class SlamPatrol:
         # x, y, z
         with self.lock:
             self.x, self.y, _ = info
+            self.last_pos_time = time.time()
 
     def cb_att(self, info):
         # yaw, pitch, roll (degrees)
@@ -375,13 +458,63 @@ class SlamPatrol:
         """
         self._process_vision(info, type="marker")
 
+    def cb_ai_event(self, sub_info):
+        try:
+            _num, ai_info = sub_info
+        except Exception:
+            return
+
+        obstacles = []
+
+        if isinstance(ai_info, list):
+            for item in ai_info:
+                if not isinstance(item, (list, tuple)) or len(item) < 5:
+                    continue
+                x = item[1] if len(item) > 1 else item[0]
+                w = item[3] if len(item) > 3 else None
+                if x is None or w is None:
+                    continue
+
+                try:
+                    xf = float(x)
+                    wf = float(w)
+                except Exception:
+                    continue
+
+                if xf <= 1.5:
+                    x_norm = xf
+                elif xf <= 320:
+                    x_norm = xf / 320.0
+                else:
+                    x_norm = xf / 1280.0
+
+                if wf <= 1.5:
+                    w_norm = wf
+                elif wf <= 320:
+                    w_norm = wf / 320.0
+                else:
+                    w_norm = wf / 1280.0
+
+                x_norm = max(0.0, min(1.0, x_norm))
+                w_norm = max(1e-6, min(1.0, w_norm))
+
+                angle = (x_norm - 0.5) * math.radians(90)
+                dist = 0.3 / w_norm
+                if dist > 3.0:
+                    continue
+                obstacles.append((angle, dist))
+
+        with self.lock:
+            self.ai_obstacles = obstacles
+            self.last_ai_time = time.time()
+
     def _process_vision(self, info, type):
         obstacles = []
         if info:
             for obj in info:
                 # x, y are center coordinates (0.0 - 1.0)
                 # w, h are dimensions (0.0 - 1.0)
-                x, y, w, h = obj[0], obj[1], obj[2], obj[3]
+                x, _y, w, _h = obj[0], obj[1], obj[2], obj[3]
                 
                 # Filter small objects (noise or far away)
                 if w < 0.05: continue
@@ -427,9 +560,21 @@ class SlamPatrol:
 
     def detect_visual_obstacle(self):
         try:
+            now = time.time()
+            if now - self._last_edge_check_t < 0.15:
+                if len(self._edge_block_hist) == 0:
+                    return False
+                return sum(self._edge_block_hist) >= 3
+            self._last_edge_check_t = now
+            if not self.camera_stream_enabled:
+                self._edge_block_hist.append(False)
+                return sum(self._edge_block_hist) >= 3
+
             # Get latest frame
             img = self.camera.read_cv2_image(strategy="newest")
-            if img is None: return False
+            if img is None:
+                self._edge_block_hist.append(False)
+                return sum(self._edge_block_hist) >= 3
             
             # Crop ROI: Bottom-Center (Focus on floor/legs)
             # Img shape: (360, 640) or (720, 1280)
@@ -450,23 +595,31 @@ class SlamPatrol:
             # Thresholds tuned for "sharp edges" like table legs
             edges = cv2.Canny(blurred, 50, 150)
             
-            # Count edge pixels
             edge_pixels = np.count_nonzero(edges)
             total_pixels = edges.size
-            density = edge_pixels / total_pixels
-            
-            # Debug (optional)
-            # print(f"Visual Density: {density:.3f}")
-            
-            # Threshold: 5% edge density implies complex texture/obstacle
-            # A clean floor should be < 1%
-            if density > 0.05:
-                return True
+            density = edge_pixels / total_pixels if total_pixels else 0.0
+
+            gx = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
+            angle = np.degrees(np.arctan2(gy, gx))
+            angle_abs = np.abs(angle)
+
+            edge_mask = edges > 0
+            if np.any(edge_mask):
+                vertical_grad_mask = (angle_abs <= 20) | (np.abs(angle_abs - 180) <= 20)
+                vertical_edge_pixels = np.count_nonzero(edge_mask & vertical_grad_mask)
+                vertical_fraction = vertical_edge_pixels / max(1, edge_pixels)
+            else:
+                vertical_fraction = 0.0
+
+            raw_block = (density > 0.06) or (density > 0.03 and vertical_fraction > 0.65)
+            self._edge_block_hist.append(bool(raw_block))
+            return sum(self._edge_block_hist) >= 3
                 
-        except Exception as e:
+        except Exception:
             # print(f"Vision Error: {e}")
-            pass
-        return False
+            self._edge_block_hist.append(False)
+            return sum(self._edge_block_hist) >= 3
 
     def run(self):
         # Main Loop for Auto-Reconnect
@@ -477,11 +630,13 @@ class SlamPatrol:
             
             print("SLAM Patrol Started. Mapping and Navigating...")
             
-            # State Machine: "CRUISE", "SCAN", "TURN", "AVOID"
+            # State Machine: "CRUISE", "SCAN", "TURN", "AVOID", "UNSTICK"
             state = "CRUISE"
-            scan_timer = 0
-            scan_dir = 1
-            gimbal_angle = 0
+            state_enter_t = time.time()
+            last_scan_t = 0.0
+            last_pose = (0.0, 0.0)
+            last_progress_t = time.time()
+            last_viz_t = 0.0
             
             try:
                 while self.running:
@@ -493,44 +648,69 @@ class SlamPatrol:
                     with self.lock:
                         rx, ry, ryaw = self.x, self.y, self.yaw
                         dist = self.last_dist
+                        dist_t = self.last_dist_time
+                        pos_t = self.last_pos_time
                         gyaw = self.gimbal_yaw # Relative to chassis
-                    
-                    # Update Grid Map
-                    self.mapper.update(rx, ry, ryaw, gyaw, dist if dist else 5.0)
-                    
-                    # Check Data Freshness
-                    if time.time() - self.last_dist_time > 1.0:
-                        if int(time.time()) % 2 == 0:
-                            print("⚠️ Warning: Sensor data stale!")
-                        dist = None # Treat as invalid
+
+                    now = time.time()
+
+                    if (dist_t and (now - dist_t) > TELEMETRY_DROP_S) or (pos_t and (now - pos_t) > TELEMETRY_DROP_S):
+                        raise RuntimeError("Telemetry stalled")
+
+                    dist_valid = dist if (dist is not None and (now - dist_t) <= DIST_STALE_S) else None
+                    if dist_valid is None and (now - dist_t) > DIST_STALE_S and int(now) % 2 == 0:
+                        print("⚠️ Warning: Sensor data stale!")
+
+                    self.mapper.update(rx, ry, ryaw, gyaw, dist_valid)
                     
                     # Safety Brake (IR Distance OR Visual)
-                    visual_block = False
-                    # Only check vision every 5 loops (approx 4Hz) to save CPU
-                    if state == "CRUISE" and (int(time.time() * 10) % 3 == 0):
-                        if self.detect_visual_obstacle():
-                            visual_block = True
-                            print("👁️ Visual Obstacle Detected! (Table Leg?)")
+                    edge_block = False
+                    obj_block = False
+                    obj_block_dist = None
+                    if state == "CRUISE":
+                        edge_block = self.detect_visual_obstacle()
+                        if edge_block and int(now) % 2 == 0:
+                            print("👁️ Visual Obstacle Detected! (Edge)")
+
+                        obs = self._visual_obstacles_snapshot()
+                        for oa, od in obs:
+                            if od is None:
+                                continue
+                            if od > MAX_TOF_RANGE_M + 0.5:
+                                continue
+                            if abs(oa) <= math.radians(15):
+                                if obj_block_dist is None or od < obj_block_dist:
+                                    obj_block_dist = od
+                        if obj_block_dist is not None and obj_block_dist < 1.2:
+                            obj_block = True
+                            if int(now) % 2 == 0:
+                                print(f"👁️ Visual Obstacle Detected! (SDK Vision) {obj_block_dist:.2f}m")
 
                     # Print Distance for Debug
-                    if state == "CRUISE" and (int(time.time() * 10) % 10 == 0):
-                         d_str = f"{dist:.2f}m" if dist is not None else "None"
+                    if state == "CRUISE" and (int(now * 10) % 10 == 0):
+                         d_str = f"{dist_valid:.2f}m" if dist_valid is not None else "None"
                          print(f"DEBUG: Dist={d_str}")
 
                     # Stop if sensor not ready
-                    if state == "CRUISE" and dist is None:
+                    if state == "CRUISE" and dist_valid is None:
                         self.chassis.drive_speed(x=0, y=0, z=0)
                         print("⏳ Waiting for sensor data...")
                         time.sleep(0.1)
                         continue
 
-                    if state == "CRUISE" and ((dist and dist < 0.5) or visual_block):
+                    if state == "CRUISE" and ((dist_valid is not None and dist_valid < EMERGENCY_BRAKE_DIST_M) or edge_block or obj_block):
                         # Since we are in CHASSIS_LEAD, sensor is always forward.
-                        reason = "IR Distance" if (dist and dist < 0.5) else "Visual"
-                        print(f"🛑 Emergency Brake! Obstacle ({reason}) at {dist if dist else '?'}m")
+                        if dist_valid is not None and dist_valid < EMERGENCY_BRAKE_DIST_M:
+                            reason = f"IR {dist_valid:.2f}m"
+                        elif obj_block_dist is not None:
+                            reason = f"Vision {obj_block_dist:.2f}m"
+                        else:
+                            reason = "Edge"
+                        print(f"🛑 Emergency Brake! Obstacle ({reason})")
                         self.speaker.play(robomaster.robot.SOUND_ID_ATTACK) # Alert sound
                         self.chassis.drive_speed(x=0, y=0, z=0)
                         state = "AVOID"
+                        state_enter_t = now
                         self.led_ctl.set_state("AVOID", force=True)
                         continue
 
@@ -559,45 +739,52 @@ class SlamPatrol:
                             
                         # Execute Reaction
                         if reaction_move_x != 0:
-                            if not self.chassis.move(x=reaction_move_x, y=0, z=0, xy_speed=1.0).wait_for_completed(timeout=2):
-                                 raise RuntimeError("Move Timeout")
+                            self._try_move(x=reaction_move_x, y=0, z=0, xy_speed=1.0, timeout=2, fatal_on_fail=True)
                         if reaction_turn != 0:
-                            if not self.chassis.move(x=0, y=0, z=reaction_turn, z_speed=180).wait_for_completed(timeout=2):
-                                 raise RuntimeError("Turn Timeout")
+                            self._try_move(x=0, y=0, z=reaction_turn, z_speed=180, timeout=2, fatal_on_fail=True)
                             
                         self.hit_detected = False
                         state = "CRUISE"
+                        state_enter_t = now
                         self.led_ctl.set_state("CRUISE", force=True)
                         continue
 
-                    # Update Grid Map
-                    self.mapper.update(rx, ry, ryaw, gyaw, dist)
-                    
                     # State Logic
                     if state == "CRUISE":
                         self.led_ctl.set_state("CRUISE")
-                        # Move forward slowly
-                        self.chassis.drive_speed(x=0.2, y=0, z=0)
-                        
-                        # Occasionally stop to scan
-                        scan_timer += 1
-                        if scan_timer > 60:
-                            print("Scheduled Scanning...")
+                        cruise_speed = self._cruise_speed(dist_valid)
+                        self.chassis.drive_speed(x=cruise_speed, y=0, z=0)
+
+                        moved = math.hypot(rx - last_pose[0], ry - last_pose[1])
+                        if moved > 0.03:
+                            last_pose = (rx, ry)
+                            last_progress_t = now
+
+                        preempt_scan = (dist_valid is not None and dist_valid < 0.9) or edge_block or obj_block
+                        stuck = (now - last_progress_t) > 2.5 and cruise_speed > 0.08
+                        cooldown_ok = (now - last_scan_t) > 1.2
+                        if stuck and (now - self._last_unstick_t) > 5.0:
+                            self.chassis.drive_speed(x=0, y=0, z=0)
+                            state = "UNSTICK"
+                            state_enter_t = now
+                        elif (preempt_scan and cooldown_ok) or (stuck and (now - last_scan_t) > 2.5):
                             self.chassis.drive_speed(x=0, y=0, z=0)
                             state = "SCAN"
-                            scan_timer = 0
+                            state_enter_t = now
                     
                     elif state == "AVOID":
                         self.led_ctl.set_state("AVOID", force=True)
                         self.chassis.drive_speed(x=0, y=0, z=0)
                         time.sleep(0.5)
                         state = "SCAN"
+                        state_enter_t = time.time()
                         
                     elif state == "SCAN":
                         self.led_ctl.set_state("SCAN", force=True)
                         print("Scanning surroundings (Chassis Mode)...")
                         # Stop chassis
                         self.chassis.drive_speed(x=0, y=0, z=0)
+                        last_scan_t = time.time()
                         
                         # Ensure we are in CHASSIS_LEAD
                         self.robot.set_robot_mode(mode=robomaster.robot.CHASSIS_LEAD)
@@ -617,13 +804,13 @@ class SlamPatrol:
                             if turn_needed != 0:
                                 # Normalize angle to -180 to 180
                                 turn_needed = (turn_needed + 180) % 360 - 180
-                                if not self.chassis.move(x=0, y=0, z=turn_needed, z_speed=45).wait_for_completed(timeout=5):
+                                if not self._try_move(x=0, y=0, z=turn_needed, z_speed=45, timeout=5):
                                     print("⚠️ Scan Turn Timeout!")
                                 current_heading_offset += turn_needed
                             
                             # Wait for sensor reading to update (timestamp > move_time)
                             move_end_time = time.time()
-                            d = 5.0 # Default
+                            d = MAX_TOF_RANGE_M
                             
                             # Wait up to 1.0s for a fresh reading
                             for _ in range(10):
@@ -633,38 +820,45 @@ class SlamPatrol:
                                     break
                             else:
                                 print("⚠️ Sensor Lag: Using old distance")
-                                d = self.last_dist if self.last_dist else 5.0
+                                d = self.last_dist if self.last_dist else MAX_TOF_RANGE_M
 
                             # Update Map
                             with self.lock:
                                 _rx, _ry, _ryaw = self.x, self.y, self.yaw
                                 _gyaw = self.gimbal_yaw
                             self.mapper.update(_rx, _ry, _ryaw, _gyaw, d)
-                            return d
+                            d_eff = self._angle_penalty_distance(-math.radians(yaw_angle_rel), d)
+                            return d, d_eff
 
                         # 1. Center (0)
-                        d0 = scan_at(0)
-                        measurements[0] = d0
-                        print(f"Scan 0 deg: {d0:.2f}m")
+                        _d0, d0_eff = scan_at(0)
+                        measurements[0] = d0_eff
+                        print(f"Scan 0 deg: {d0_eff:.2f}m")
                         
                         # Quick Check: If Front is clear (> 1.5m), skip side scan!
-                        if d0 > 1.5:
+                        if d0_eff > 1.5:
                             print("🚀 Front is clear! Skipping full scan.")
                             best_ang = 0
-                            max_d = d0
+                            max_d = d0_eff
                         else:
                             # Full Scan Initiated: Play Sound Here
                             self.speaker.play(robomaster.robot.SOUND_ID_SCANNING)
                             
-                            # 2. Left 60
-                            d60 = scan_at(60)
-                            measurements[60] = d60
-                            print(f"Scan 60 deg: {d60:.2f}m")
-                            
-                            # 3. Right 60 (turn -120 to reach -60)
-                            dm60 = scan_at(-60)
-                            measurements[-60] = dm60
-                            print(f"Scan -60 deg: {dm60:.2f}m")
+                            _d60, d60_eff = scan_at(60)
+                            measurements[60] = d60_eff
+                            print(f"Scan 60 deg: {d60_eff:.2f}m")
+
+                            _dm60, dm60_eff = scan_at(-60)
+                            measurements[-60] = dm60_eff
+                            print(f"Scan -60 deg: {dm60_eff:.2f}m")
+
+                            _d120, d120_eff = scan_at(120)
+                            measurements[120] = d120_eff
+                            print(f"Scan 120 deg: {d120_eff:.2f}m")
+
+                            _dm120, dm120_eff = scan_at(-120)
+                            measurements[-120] = dm120_eff
+                            print(f"Scan -120 deg: {dm120_eff:.2f}m")
                             
                             # Find best direction (Strictly Max Distance)
                             best_ang = 0
@@ -695,9 +889,23 @@ class SlamPatrol:
                         self.target_turn_deg = final_turn
                         
                         state = "TURN"
+                        state_enter_t = time.time()
                     
                     elif state == "PLAN":
                         state = "CRUISE"
+                        state_enter_t = now
+
+                    elif state == "UNSTICK":
+                        self.led_ctl.set_state("AVOID", force=True)
+                        ok = self._unstick()
+                        if not ok:
+                            self.chassis.drive_speed(x=0, y=0, z=0)
+                            time.sleep(0.5)
+                        with self.lock:
+                            last_pose = (self.x, self.y)
+                        last_progress_t = time.time()
+                        state = "SCAN"
+                        state_enter_t = time.time()
                     
                     elif state == "TURN":
                         self.led_ctl.set_state("TURN", force=True)
@@ -707,21 +915,30 @@ class SlamPatrol:
                             turn_cmd = self.target_turn_deg
                             # No limit range (allow 180 turn)
                             
-                            if not self.chassis.move(x=0, y=0, z=turn_cmd, z_speed=45).wait_for_completed(timeout=8):
+                            if not self._try_move(x=0, y=0, z=turn_cmd, z_speed=45, timeout=8):
                                 print("⚠️ Turn Timeout! Wi-Fi unstable?")
                         
                         state = "CRUISE"
+                        state_enter_t = time.time()
                         self.led_ctl.set_state("CRUISE", force=True)
+
+                    if (now - state_enter_t) > 18.0 and state in ("SCAN", "TURN"):
+                        self.chassis.drive_speed(x=0, y=0, z=0)
+                        state = "UNSTICK"
+                        state_enter_t = now
 
                     # Visualization
                     if self.running:
-                        self.ax.clear()
-                        self.ax.imshow(self.mapper.map.T, origin='lower', cmap='Greys', extent=[0, 20, 0, 20])
-                        self.ax.plot(rx + 10, ry + 10, 'ro')
-                        ex = (rx + 10) + (dist if dist else 2.0) * math.cos(ryaw + gyaw)
-                        ey = (ry + 10) + (dist if dist else 2.0) * math.sin(ryaw + gyaw)
-                        self.ax.plot([rx+10, ex], [ry+10, ey], 'g-')
-                        plt.pause(0.01)
+                        if now - last_viz_t > 0.2:
+                            last_viz_t = now
+                            self.ax.clear()
+                            self.ax.imshow(self.mapper.map.T, origin='lower', cmap='Greys', extent=[0, 20, 0, 20])
+                            self.ax.plot(rx + 10, ry + 10, 'ro')
+                            d_line = dist_valid if dist_valid is not None else MAX_TOF_RANGE_M
+                            ex = (rx + 10) + d_line * math.cos(ryaw + gyaw)
+                            ey = (ry + 10) + d_line * math.sin(ryaw + gyaw)
+                            self.ax.plot([rx+10, ex], [ry+10, ey], 'g-')
+                            plt.pause(0.01)
 
                     time.sleep(0.05)
             
