@@ -18,14 +18,31 @@ if sdk_path not in sys.path:
 import robomaster
 from robomaster import robot
 import logging
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+except Exception:
+    cv2 = None
+    np = None
 try:
     from .grid_map import GridMapper
 except ImportError:
     from grid_map import GridMapper
+try:
+    from .wander_bt import WanderCtx, build_tree
+except ImportError:
+    from wander_bt import WanderCtx, build_tree
+try:
+    from .persona_runtime import PersonaCtx
+    from .persona_tree import PersonaController
+except ImportError:
+    from persona_runtime import PersonaCtx
+    from persona_tree import PersonaController
 
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
 
 MAX_TOF_RANGE_M = 2.0
 DIST_STALE_S = 1.0
@@ -41,14 +58,22 @@ class Speaker:
     def __init__(self, robot_instance):
         self.robot = robot_instance
         self.last_sound_time = 0
+        self._last_by_id = {}
         
-    def play(self, sound_id):
-        """Play a system sound if enough time has passed."""
-        if time.time() - self.last_sound_time < 1.0: # Debounce
+    def play(self, sound_id, min_interval_s=None):
+        now = time.time()
+        if min_interval_s is None:
+            if sound_id == getattr(robomaster.robot, "SOUND_ID_SCANNING", None):
+                min_interval_s = 18.0
+            else:
+                min_interval_s = 1.0
+        last = float(self._last_by_id.get(int(sound_id), 0.0))
+        if (now - last) < float(min_interval_s):
             return
         try:
             self.robot.play_sound(sound_id).wait_for_completed(timeout=1)
-            self.last_sound_time = time.time()
+            self.last_sound_time = now
+            self._last_by_id[int(sound_id)] = now
         except:
             pass
 
@@ -106,9 +131,11 @@ class LedController:
             print(f"⚠️ LED Error: {e}")
 
 class SlamPatrol:
-    def __init__(self, conn_type="sta", verbose=False):
+    def __init__(self, conn_type="sta", verbose=False, viz=False, camera_stream=None):
         self.conn_type = conn_type
         self.verbose = verbose
+        self.viz_enabled = bool(viz) and (plt is not None)
+        self.camera_stream_override = camera_stream
         self.create_lock_file()
         
         # Enable SDK logging if verbose
@@ -145,6 +172,8 @@ class SlamPatrol:
         self.last_dist = None
         self.last_dist_time = 0
         self.last_pos_time = 0
+        self.last_battery_pct = None
+        self.last_battery_time = 0.0
         
         # Vision
         self.visual_obstacles = [] # List of (angle_rad, dist_m) relative to gimbal center
@@ -169,10 +198,12 @@ class SlamPatrol:
         # Cleanup on exit
         atexit.register(self.cleanup)
 
-        # Visualization
-        self.fig, self.ax = plt.subplots()
+        self.fig = None
+        self.ax = None
         self.img = None
-        plt.ion() # Interactive mode
+        if self.viz_enabled:
+            self.fig, self.ax = plt.subplots()
+            plt.ion()
 
     def _cruise_speed(self, dist_m):
         if dist_m is None:
@@ -255,23 +286,43 @@ class SlamPatrol:
         self._unstick_side *= -1
 
         back = 0.25
-        strafe = 0.35
+        back_z = 28 * side
+        back_speed = 0.18
+        arc_z = 45 * side
+        arc_t = 1.3
         turn = 35 * side
         if self._unstick_attempts == 2:
             back = 0.35
-            strafe = 0.45
+            back_z = 40 * side
+            back_speed = 0.20
+            arc_z = 65 * side
+            arc_t = 1.5
             turn = 90 * side
         elif self._unstick_attempts >= 3:
             back = 0.45
-            strafe = 0.55
+            back_z = 55 * side
+            back_speed = 0.22
+            arc_z = 85 * side
+            arc_t = 1.7
             turn = 180
 
-        ok = self._try_move(x=-back, xy_speed=0.6, timeout=5)
-        if not ok:
+        try:
+            back_t = max(0.6, min(2.2, float(back) / max(0.10, float(back_speed))))
+            self.chassis.drive_speed(x=-float(back_speed), y=0.0, z=float(back_z))
+            time.sleep(back_t)
+            self.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
+            time.sleep(0.1)
+        except Exception:
+            self._note_action_failure()
             return False
 
-        ok = self._try_move(y=strafe * side, xy_speed=0.6, timeout=6)
-        if not ok:
+        try:
+            self.chassis.drive_speed(x=0.18, y=0.0, z=float(arc_z))
+            time.sleep(float(arc_t))
+            self.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
+            time.sleep(0.1)
+        except Exception:
+            self._note_action_failure()
             return False
 
         ok = self._try_move(z=turn, z_speed=120, timeout=8)
@@ -286,7 +337,13 @@ class SlamPatrol:
             # Let's try to read PID and check.
             try:
                 with open(LOCK_FILE, 'r') as f:
-                    pid = int(f.read().strip())
+                    raw = f.read().strip()
+                try:
+                    import json
+                    data = json.loads(raw)
+                    pid = int(data.get("pid"))
+                except Exception:
+                    pid = int(raw)
                 try:
                     os.kill(pid, 0) # Check if process exists
                     print(f"Process {pid} is running. Exiting.")
@@ -294,11 +351,16 @@ class SlamPatrol:
                 except OSError:
                     print("Stale lock file found. Removing.")
                     os.remove(LOCK_FILE)
-            except:
+            except Exception:
                 pass
         
         with open(LOCK_FILE, 'w') as f:
-            f.write(str(os.getpid()))
+            try:
+                import json
+                payload = {"pid": int(os.getpid()), "conn": str(self.conn_type), "t": float(time.time())}
+                f.write(json.dumps(payload))
+            except Exception:
+                f.write(str(os.getpid()))
 
     def cleanup(self):
         if os.path.exists(LOCK_FILE):
@@ -339,18 +401,33 @@ class SlamPatrol:
                 self.camera = self.robot.camera
                 
                 self.camera_stream_enabled = False
-                if self.conn_type in ("ap", "rndis"):
-                    print("Starting Camera Stream...")
-                    self.camera.start_video_stream(display=False)
-                    self.camera_stream_enabled = True
+                camera_stream = self.camera_stream_override
+                if camera_stream is None:
+                    camera_stream = (self.conn_type in ("ap", "rndis")) and (cv2 is not None and np is not None)
+                if camera_stream and self.conn_type == "sta":
+                    camera_stream = False
+                    print("Camera Stream Disabled: conn_type=sta is not supported.")
+                if camera_stream:
+                    try:
+                        print("Starting Camera Stream...")
+                        self.camera.start_video_stream(display=False)
+                        self.camera_stream_enabled = True
+                    except Exception as e:
+                        self.camera_stream_enabled = False
+                        print(f"⚠️ Camera Stream Disabled: {e}")
                 else:
-                    print("Camera Stream Disabled for conn_type=sta")
+                    print("Camera Stream Disabled.")
                 
                 # Subscriptions
                 self.chassis.sub_position(freq=20, callback=self.cb_pos)
                 self.chassis.sub_attitude(freq=20, callback=self.cb_att)
                 self.sensor.sub_distance(freq=20, callback=self.cb_dist)
                 self.gimbal.sub_angle(freq=20, callback=self.cb_gimbal)
+                try:
+                    if self.robot.battery:
+                        self.robot.battery.sub_battery_info(freq=1, callback=self.cb_battery)
+                except Exception:
+                    pass
                 
                 # Vision
                 if self.robot.vision:
@@ -447,6 +524,18 @@ class SlamPatrol:
                 self.last_dist_time = time.time()
         except:
             pass
+
+    def cb_battery(self, percent):
+        try:
+            p = int(percent)
+        except Exception:
+            try:
+                p = int(percent[0])
+            except Exception:
+                return
+        with self.lock:
+            self.last_battery_pct = p
+            self.last_battery_time = time.time()
 
     def cb_vision_person(self, info):
         """
@@ -564,6 +653,9 @@ class SlamPatrol:
 
     def detect_visual_obstacle(self):
         try:
+            if cv2 is None or np is None:
+                self._edge_block_hist.append(False)
+                return sum(self._edge_block_hist) >= 3
             now = time.time()
             if now - self._last_edge_check_t < 0.15:
                 if len(self._edge_block_hist) == 0:
@@ -850,7 +942,7 @@ class SlamPatrol:
                             max_d = d0_eff
                         else:
                             # Full Scan Initiated: Play Sound Here
-                            self.speaker.play(robomaster.robot.SOUND_ID_SCANNING)
+                            self.speaker.play(robomaster.robot.SOUND_ID_SCANNING, min_interval_s=25.0)
                             
                             _d60, d60_eff = scan_at(60)
                             measurements[60] = d60_eff
@@ -944,9 +1036,8 @@ class SlamPatrol:
                         state = "CRUISE"
                         self.led_ctl.set_state("CRUISE", force=True)
 
-                    # Visualization
-                    if self.running:
-                        if now - last_viz_t > 0.2:
+                    if self.viz_enabled and self.running:
+                        if now - last_viz_t > 0.2 and self.ax is not None:
                             last_viz_t = now
                             self.ax.clear()
                             self.ax.imshow(self.mapper.map.T, origin='lower', cmap='Greys', extent=[0, 20, 0, 20])
@@ -969,12 +1060,154 @@ class SlamPatrol:
                 # Loop will restart and call initialize()
                 time.sleep(2)
 
-def stop_robot():
+    def run_bt(self):
+        while self.running:
+            if not self.initialize():
+                break
+
+            print("SLAM Patrol Started. Behavior Tree Running...")
+            root = build_tree()
+            bb = {"rng_seed": int(time.time())}
+            last_viz_t = 0.0
+
+            try:
+                while self.running:
+                    with self.lock:
+                        rx, ry, ryaw = self.x, self.y, self.yaw
+                        dist = self.last_dist
+                        dist_t = self.last_dist_time
+                        pos_t = self.last_pos_time
+                        gyaw = self.gimbal_yaw
+
+                    now = time.time()
+                    if (dist_t and (now - dist_t) > TELEMETRY_DROP_S) or (pos_t and (now - pos_t) > TELEMETRY_DROP_S):
+                        raise RuntimeError("Telemetry stalled")
+
+                    dist_valid = dist if (dist is not None and (now - dist_t) <= DIST_STALE_S) else None
+                    self.mapper.update(rx, ry, ryaw, gyaw, dist_valid)
+
+                    ctx = WanderCtx(
+                        patrol=self,
+                        now=now,
+                        pose=(rx, ry, ryaw),
+                        dist=dist_valid,
+                        dist_t=dist_t,
+                        pos_t=pos_t,
+                        gyaw=gyaw,
+                    )
+                    root.tick(ctx, bb)
+
+                    if self.viz_enabled and self.running:
+                        if now - last_viz_t > 0.2 and self.ax is not None:
+                            last_viz_t = now
+                            self.ax.clear()
+                            self.ax.imshow(self.mapper.map.T, origin='lower', cmap='Greys', extent=[0, 20, 0, 20])
+                            self.ax.plot(rx + 10, ry + 10, 'ro')
+                            d_line = dist_valid if dist_valid is not None else MAX_TOF_RANGE_M
+                            ex = (rx + 10) + d_line * math.cos(ryaw + gyaw)
+                            ey = (ry + 10) + d_line * math.sin(ryaw + gyaw)
+                            self.ax.plot([rx + 10, ex], [ry + 10, ey], 'g-')
+                            plt.pause(0.01)
+
+                    time.sleep(0.05)
+            except Exception as e:
+                print(f"⚠️ Runtime Error (Disconnected?): {e}")
+                print("Attempting to reconnect...")
+                try:
+                    self.robot.close()
+                except:
+                    pass
+                time.sleep(2)
+
+    def run_persona(self, enable_fire=False):
+        while self.running:
+            if not self.initialize():
+                break
+
+            controller = PersonaController(enable_fire=enable_fire)
+            print(f"SLAM Patrol Started. Persona Tree Running... ({controller.behavior_count()} behaviors)")
+            last_viz_t = 0.0
+
+            try:
+                while self.running:
+                    with self.lock:
+                        rx, ry, ryaw = self.x, self.y, self.yaw
+                        dist = self.last_dist
+                        dist_t = self.last_dist_time
+                        pos_t = self.last_pos_time
+                        gyaw = self.gimbal_yaw
+                        bat = self.last_battery_pct
+                        bat_t = self.last_battery_time
+
+                    now = time.time()
+                    if (dist_t and (now - dist_t) > TELEMETRY_DROP_S) or (pos_t and (now - pos_t) > TELEMETRY_DROP_S):
+                        raise RuntimeError("Telemetry stalled")
+
+                    dist_valid = dist if (dist is not None and (now - dist_t) <= DIST_STALE_S) else None
+                    self.mapper.update(rx, ry, ryaw, gyaw, dist_valid)
+
+                    ctx = PersonaCtx(
+                        patrol=self,
+                        now=now,
+                        pose=(rx, ry, ryaw),
+                        dist=dist_valid,
+                        dist_t=dist_t,
+                        pos_t=pos_t,
+                        gyaw=gyaw,
+                        battery_pct=bat,
+                        battery_t=bat_t,
+                    )
+                    controller.tick(ctx)
+
+                    if self.viz_enabled and self.running:
+                        if now - last_viz_t > 0.2 and self.ax is not None:
+                            last_viz_t = now
+                            self.ax.clear()
+                            self.ax.imshow(self.mapper.map.T, origin='lower', cmap='Greys', extent=[0, 20, 0, 20])
+                            self.ax.plot(rx + 10, ry + 10, 'ro')
+                            d_line = dist_valid if dist_valid is not None else MAX_TOF_RANGE_M
+                            ex = (rx + 10) + d_line * math.cos(ryaw + gyaw)
+                            ey = (ry + 10) + d_line * math.sin(ryaw + gyaw)
+                            self.ax.plot([rx + 10, ex], [ry + 10, ey], 'g-')
+                            plt.pause(0.01)
+
+                    time.sleep(0.05)
+            except Exception as e:
+                print(f"⚠️ Runtime Error (Disconnected?): {e}")
+                print("Attempting to reconnect...")
+                try:
+                    self.robot.close()
+                except:
+                    pass
+                time.sleep(2)
+
+def stop_robot(conn_type: str = "sta"):
     """Helper to stop running instance."""
+    def direct_stop(ct: str) -> bool:
+        for _ in range(2):
+            try:
+                r = robot.Robot()
+                r.initialize(conn_type=ct)
+                r.chassis.drive_speed(x=0, y=0, z=0)
+                r.close()
+                return True
+            except Exception:
+                time.sleep(0.35)
+        return False
+
     if os.path.exists(LOCK_FILE):
         try:
             with open(LOCK_FILE, 'r') as f:
-                pid = int(f.read().strip())
+                raw = f.read().strip()
+            pid = None
+            lock_conn = None
+            try:
+                import json
+                data = json.loads(raw)
+                pid = int(data.get("pid"))
+                lock_conn = data.get("conn")
+            except Exception:
+                pid = int(raw)
             print(f"Stopping process {pid}...")
             os.kill(pid, signal.SIGTERM)
             # Wait a bit
@@ -983,38 +1216,142 @@ def stop_robot():
                 print("Force killing...")
                 os.kill(pid, signal.SIGKILL)
                 os.remove(LOCK_FILE)
+            ct = str(lock_conn) if lock_conn else str(conn_type)
+            if direct_stop(ct):
+                print("Robot stopped.")
+            else:
+                for alt in ("sta", "ap", "rndis"):
+                    if alt == ct:
+                        continue
+                    if direct_stop(alt):
+                        print("Robot stopped.")
+                        break
         except Exception as e:
             print(f"Error stopping process: {e}")
-            # Fallback to direct stop command
-            try:
-                r = robot.Robot()
-                r.initialize(conn_type="sta")
-                r.chassis.drive_speed(x=0, y=0, z=0)
-                r.close()
-                print("Robot stopped via direct command.")
-            except:
-                pass
+            if direct_stop(conn_type):
+                print("Robot stopped.")
+            else:
+                for alt in ("sta", "ap", "rndis"):
+                    if alt == conn_type:
+                        continue
+                    if direct_stop(alt):
+                        print("Robot stopped.")
+                        break
     else:
         print("No lock file found. Sending direct stop command...")
-        try:
-            r = robot.Robot()
-            r.initialize(conn_type="sta")
-            r.chassis.drive_speed(x=0, y=0, z=0)
-            r.close()
+        if direct_stop(conn_type):
             print("Robot stopped.")
-        except Exception as e:
-            print(f"Failed to stop robot: {e}")
+        else:
+            ok = False
+            for alt in ("sta", "ap", "rndis"):
+                if alt == conn_type:
+                    continue
+                if direct_stop(alt):
+                    print("Robot stopped.")
+                    ok = True
+                    break
+            if not ok:
+                print("Failed to stop robot: direct stop failed")
+
+
+def _generate_test_wav(path: str, seconds: float = 2.5, freq_hz: float = 440.0, amp: float = 0.65, sr: int = 48000) -> str:
+    import wave
+    import struct
+    n = max(1, int(float(seconds) * int(sr)))
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        for i in range(n):
+            t = i / float(sr)
+            gate = 1.0
+            if (t % 0.8) > 0.55:
+                gate = 0.0
+            v = float(amp) * gate * math.sin(2.0 * math.pi * float(freq_hz) * t)
+            wf.writeframes(struct.pack("<h", int(max(-1.0, min(1.0, v)) * 32767)))
+    return path
+
+
+def play_audio_test(conn_type: str, audio_path: str, seconds: float = 2.5, freq_hz: float = 440.0, amp: float = 0.65) -> None:
+    if audio_path == "__beep__":
+        audio_path = _generate_test_wav("/tmp/robomaster_audio_test.wav", seconds=seconds, freq_hz=freq_hz, amp=amp)
+        print(f"Generated test audio: {audio_path}")
+    r = robot.Robot()
+    r.initialize(conn_type=conn_type)
+    try:
+        act = r.play_audio(audio_path)
+        if act is None:
+            raise RuntimeError("play_audio returned None")
+        ok = act.wait_for_completed(timeout=6)
+        print(f"Audio sent. completed={bool(ok)} file={audio_path}")
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--stop", action="store_true", help="Stop the robot immediately")
     parser.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type (sta/ap/rndis)")
+    parser.add_argument("--audio-test", nargs="?", const="__beep__", default=None, help="Upload and play a wav file (mono 48kHz). If no file, plays a generated beep.")
+    parser.add_argument("--audio-seconds", type=float, default=2.5)
+    parser.add_argument("--audio-freq-hz", type=float, default=440.0)
+    parser.add_argument("--audio-amp", type=float, default=0.65)
+    parser.add_argument("--viz", action="store_true", help="Enable matplotlib visualization")
+    parser.add_argument("--camera-stream", action="store_true", help="Force enable camera stream")
+    parser.add_argument("--no-camera-stream", action="store_true", help="Force disable camera stream")
+    parser.add_argument("--max-tof-range-m", type=float, default=None)
+    parser.add_argument("--dist-stale-s", type=float, default=None)
+    parser.add_argument("--telemetry-drop-s", type=float, default=None)
+    parser.add_argument("--emergency-brake-dist-m", type=float, default=None)
+    parser.add_argument("--cruise-dist-min-m", type=float, default=None)
+    parser.add_argument("--cruise-dist-max-m", type=float, default=None)
+    parser.add_argument("--cruise-speed-min", type=float, default=None)
+    parser.add_argument("--cruise-speed-max", type=float, default=None)
+    parser.add_argument("--legacy", action="store_true", help="Run legacy state machine controller")
+    parser.add_argument("--bt", action="store_true", help="Run minimal behavior tree controller")
+    parser.add_argument("--persona", action="store_true", help="Run persona behavior tree controller")
+    parser.set_defaults(enable_fire=True)
+    parser.add_argument("--enable-fire", action="store_true", help="Enable blaster usage in persona mode")
+    parser.add_argument("--disable-fire", action="store_true", help="Disable blaster usage in persona mode")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
     
     if args.stop:
-        stop_robot()
+        stop_robot(conn_type=args.conn)
+    elif args.audio_test is not None:
+        play_audio_test(conn_type=args.conn, audio_path=str(args.audio_test), seconds=float(args.audio_seconds), freq_hz=float(args.audio_freq_hz), amp=float(args.audio_amp))
     else:
-        bot = SlamPatrol(conn_type=args.conn, verbose=args.verbose)
-        bot.run()
+        if args.max_tof_range_m is not None:
+            MAX_TOF_RANGE_M = float(args.max_tof_range_m)
+        if args.dist_stale_s is not None:
+            DIST_STALE_S = float(args.dist_stale_s)
+        if args.telemetry_drop_s is not None:
+            TELEMETRY_DROP_S = float(args.telemetry_drop_s)
+        if args.emergency_brake_dist_m is not None:
+            EMERGENCY_BRAKE_DIST_M = float(args.emergency_brake_dist_m)
+        if args.cruise_dist_min_m is not None:
+            CRUISE_DIST_MIN_M = float(args.cruise_dist_min_m)
+        if args.cruise_dist_max_m is not None:
+            CRUISE_DIST_MAX_M = float(args.cruise_dist_max_m)
+        if args.cruise_speed_min is not None:
+            CRUISE_SPEED_MIN = float(args.cruise_speed_min)
+        if args.cruise_speed_max is not None:
+            CRUISE_SPEED_MAX = float(args.cruise_speed_max)
+
+        camera_stream = None
+        if bool(args.camera_stream) and (not bool(args.no_camera_stream)):
+            camera_stream = True
+        if bool(args.no_camera_stream):
+            camera_stream = False
+
+        bot = SlamPatrol(conn_type=args.conn, verbose=args.verbose, viz=bool(args.viz), camera_stream=camera_stream)
+        if args.legacy:
+            bot.run()
+        elif args.bt:
+            bot.run_bt()
+        else:
+            enable_fire = bool(args.enable_fire) and (not bool(args.disable_fire))
+            bot.run_persona(enable_fire=enable_fire)

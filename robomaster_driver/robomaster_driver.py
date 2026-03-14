@@ -193,9 +193,37 @@ class RoboMasterDriver:
         type: 'ir' or 'bead'
         """
         def _do():
-            print(f"Firing {type}...")
-            self.blaster.fire(fire_type=type, times=int(count))
+            fire_type = "ir"
+            print(f"Firing {fire_type}...")
+            self.blaster.fire(fire_type=fire_type, times=int(count))
             time.sleep(max(1.0, count * 0.5))
+        return self._call_with_reconnect(_do)
+
+    def play_sound(self, sound, times=1, timeout_s=2.0):
+        def _do():
+            sound_id = _parse_sound_id(sound)
+            t = int(times)
+            if t <= 0:
+                return True
+            print(f"Playing sound: id={sound_id} times={t}")
+            act = self.robot.play_sound(int(sound_id), times=t)
+            if act is None:
+                return False
+            ok = act.wait_for_completed(timeout=float(timeout_s))
+            return bool(ok)
+        return self._call_with_reconnect(_do)
+
+    def play_audio(self, path: str, timeout_s: float = 8.0):
+        def _do():
+            p = str(path)
+            if not os.path.isabs(p):
+                p = os.path.abspath(p)
+            print(f"Playing audio: {p}")
+            act = self.robot.play_audio(p)
+            if act is None:
+                return False
+            ok = act.wait_for_completed(timeout=float(timeout_s))
+            return bool(ok)
         return self._call_with_reconnect(_do)
 
     def set_led(self, comp="all", r=255, g=255, b=255, effect="on"):
@@ -273,8 +301,29 @@ class RoboMasterDriver:
             
         return info
 
+
+def _parse_sound_id(v):
+    if isinstance(v, int):
+        return v
+    s = str(v).strip()
+    if not s:
+        raise ValueError("sound id is empty")
+    aliases = {
+        "attack": getattr(robomaster.robot, "SOUND_ID_ATTACK", 0x101),
+        "shoot": getattr(robomaster.robot, "SOUND_ID_SHOOT", 0x102),
+        "scanning": getattr(robomaster.robot, "SOUND_ID_SCANNING", 0x103),
+        "recognized": getattr(robomaster.robot, "SOUND_ID_RECOGNIZED", 0x104),
+        "gimbal_move": getattr(robomaster.robot, "SOUND_ID_GIMBAL_MOVE", 0x105),
+        "count_down": getattr(robomaster.robot, "SOUND_ID_COUNT_DOWN", 0x106),
+        "countdown": getattr(robomaster.robot, "SOUND_ID_COUNT_DOWN", 0x106),
+    }
+    key = s.lower().replace("-", "_")
+    if key in aliases:
+        return int(aliases[key])
+    return int(s, 0)
+
 def main():
-    parser = argparse.ArgumentParser(description="RoboMaster EP Driver (SDK)")
+    parser = argparse.ArgumentParser(description="RoboMaster EP Driver (SDK)", conflict_handler="resolve")
     # Connection args
     parser.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     
@@ -282,48 +331,73 @@ def main():
 
     # Move
     mv = subparsers.add_parser("move", help="Move chassis")
+    mv.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     mv.add_argument("x", type=float, help="Forward/Back (m)")
     mv.add_argument("y", type=float, default=0.0, nargs='?', help="Left/Right (m)")
     mv.add_argument("z", type=float, default=0.0, nargs='?', help="Rotation (deg)")
 
     # Shortcuts
     fw = subparsers.add_parser("forward", help="Move forward")
+    fw.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     fw.add_argument("dist", type=float, help="Distance in meters")
 
     bk = subparsers.add_parser("back", help="Move backward")
+    bk.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     bk.add_argument("dist", type=float, help="Distance in meters")
 
     lt = subparsers.add_parser("left", help="Turn left")
+    lt.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     lt.add_argument("angle", type=float, help="Angle in degrees")
 
     rt = subparsers.add_parser("right", help="Turn right")
+    rt.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     rt.add_argument("angle", type=float, help="Angle in degrees")
     
     tn = subparsers.add_parser("turn", help="Turn chassis")
+    tn.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     tn.add_argument("angle", type=float, help="Angle in degrees (positive=left, negative=right)")
 
-    subparsers.add_parser("uturn", help="Turn 180 degrees")
+    ut = subparsers.add_parser("uturn", help="Turn 180 degrees")
+    ut.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
 
     # Gimbal
     gim = subparsers.add_parser("gimbal", help="Move gimbal")
+    gim.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     gim.add_argument("p", type=float)
     gim.add_argument("y", type=float, default=0.0, nargs='?')
     gim.add_argument("--abs", action="store_true", help="Absolute positioning")
 
     # Fire
     fire = subparsers.add_parser("fire", help="Fire blaster")
+    fire.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     fire.add_argument("type", default="ir", choices=['ir', 'bead'])
     fire.add_argument("count", type=int, default=1)
 
+    # Sound
+    snd = subparsers.add_parser("sound", help="Play a system sound")
+    snd.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
+    snd.add_argument("sound", help="Sound id (e.g. 0x103) or alias (attack/shoot/scanning/recognized/gimbal_move/count_down)")
+    snd.add_argument("--times", type=int, default=1)
+    snd.add_argument("--timeout", type=float, default=2.0)
+
+    # Audio
+    aud = subparsers.add_parser("audio", help="Upload and play a wav file (mono 48kHz)")
+    aud.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
+    aud.add_argument("path", help="Path to wav file")
+    aud.add_argument("--timeout", type=float, default=10.0)
+
     # Recenter
-    subparsers.add_parser("recenter", help="Recenter gimbal")
+    rc = subparsers.add_parser("recenter", help="Recenter gimbal")
+    rc.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
 
     # Sensor
     sens = subparsers.add_parser("sensor", help="Read sensors")
+    sens.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     sens.add_argument("--dist", action="store_true", help="Read distance")
     
     # LED
     led_p = subparsers.add_parser("led", help="Control LEDs")
+    led_p.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
     led_p.add_argument("--comp", default="all", help="Component: all, top_all, bottom_all, etc.")
     led_p.add_argument("-r", type=int, default=255, help="Red (0-255)")
     led_p.add_argument("-g", type=int, default=255, help="Green (0-255)")
@@ -331,7 +405,8 @@ def main():
     led_p.add_argument("--effect", default="on", choices=["on", "off", "flash", "breath", "scrolling"], help="Effect")
 
     # Info
-    subparsers.add_parser("info", help="Get system info")
+    inf = subparsers.add_parser("info", help="Get system info")
+    inf.add_argument("--conn", default="sta", choices=["sta", "ap", "rndis"], help="Connection type")
 
     args = parser.parse_args()
     if not args.command:
@@ -364,6 +439,10 @@ def main():
                 driver.move_gimbal(args.p, args.y)
         elif args.command == "fire":
             driver.fire(args.type, args.count)
+        elif args.command == "sound":
+            driver.play_sound(args.sound, times=args.times, timeout_s=args.timeout)
+        elif args.command == "audio":
+            driver.play_audio(args.path, timeout_s=args.timeout)
         elif args.command == "recenter":
             driver.recenter()
         elif args.command == "sensor":

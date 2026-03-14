@@ -7,20 +7,18 @@ metadata:
     tags: ["robotics", "autonomous", "python", "sdk", "robomaster"]
 ---
 
-# RoboMaster Autonomous Patrol (SDK Version)
+# RoboMaster Wander (SDK Version)
 
-This skill transforms the RoboMaster EP/S1 robot into an advanced autonomous sentry, capable of navigating complex home environments, avoiding obstacles (even those invisible to IR), and interacting via LED feedback.
+This skill turns RoboMaster EP/S1 into a dog-like autonomous wanderer: it explores, avoids obstacles, occasionally plays audio, and uses LEDs for state feedback.
 
-It leverages the official DJI RoboMaster SDK for robust communication and integrates a multi-sensor fusion approach (IR + Vision).
+By default it runs the **persona** controller (multi-track behavior: locomotion / head / overlay), built on top of the DJI RoboMaster SDK (IR + Vision).
 
 ## Key Features
 
 ### 🧠 Intelligent Navigation
-- **Hybrid Motion Engine**:
-  - **Cruise Mode**: Uses `CHASSIS_LEAD` for stable, tank-like movement.
-  - **Efficient Scan**: Uses `FREE` mode for quick head-turning checks. Skips full scans if the front is clear (>1.5m).
-  - **Precision Turn**: Executes smooth, controlled chassis rotations (45°/s) to avoid jerkiness.
-  - **U-Turn**: Automatically performs a 180° turn when trapped in dead ends.
+- **Persona Locomotion**: Uses arc-like motion for a more natural feel, but prefers straight motion when the path ahead is wide open.
+- **Unstick**: When stuck, performs a combined arc-reverse / arc-forward / turn sequence.
+- **Scan Sound Rate Limit**: Scanning sound is rate-limited to avoid spamming.
 
 ### 👁️ Advanced Perception
 - **Visual Obstacle Guard**: Uses onboard camera and edge detection to identify "thin" obstacles (like table legs) that the IR sensor might miss.
@@ -35,7 +33,7 @@ It leverages the official DJI RoboMaster SDK for robust communication and integr
   - 🔴 **Red (Flash)**: Emergency brake / Obstacle detected.
   - 🟣 **Purple (Flash)**: Armor hit detected (Panic mode).
 - **Heartbeat Refresh**: Ensures LED state remains consistent even with packet loss.
-- **Silent Operation**: Only emits sound when actively scanning for a path, remaining quiet during normal patrol.
+- **Audio/Voice Overlay**: Plays system sounds and custom wav (e.g. the dog SFX pack), and emits a short “bark/yelp” style cue during unstick.
 
 ### 🛡️ Robustness
 - **Auto-Reconnect**: Automatically detects Wi-Fi disconnection and attempts to reconnect without user intervention.
@@ -44,35 +42,43 @@ It leverages the official DJI RoboMaster SDK for robust communication and integr
 ## Usage
 
 ```bash
-# Run in default mode (Silent, Console Logging)
-python3 robomaster_wander.py
+# Run persona mode (default)
+python3 robomaster_wander/robomaster_wander.py --conn sta
 
 # Run with verbose debug logs (See sensor data & decisions)
-python3 robomaster_wander.py -v
+python3 robomaster_wander/robomaster_wander.py --conn sta -v
+
+# Disable blaster usage in persona mode
+python3 robomaster_wander/robomaster_wander.py --conn sta --disable-fire
+
+# Run legacy state machine controller
+python3 robomaster_wander/robomaster_wander.py --conn sta --legacy
+
+# Run minimal behavior tree controller
+python3 robomaster_wander/robomaster_wander.py --conn sta --bt
 
 # Stop the robot immediately
-python3 robomaster_wander.py --stop
+python3 robomaster_wander/robomaster_wander.py --stop --conn sta
+
+# Upload and play a wav file (mono 48kHz). If no path, plays a generated beep.
+python3 robomaster_wander/robomaster_wander.py --audio-test
 ```
 
 ### Arguments
 - `--conn`: Connection type (`sta` by default, `ap`, `rndis`).
 - `-v`, `--verbose`: Enable detailed SDK and logic logs.
 - `--stop`: Send a stop command to a running instance.
+- `--enable-fire` / `--disable-fire`: Enable/disable blaster usage in persona mode.
+- `--legacy`: Run the legacy controller.
+- `--bt`: Run the minimal behavior tree controller.
+- `--persona`: Run persona controller (default).
+- `--audio-test [path]`: Upload and play a wav file; if no path, plays a generated beep.
+- `--viz`: Enable matplotlib visualization.
+- `--camera-stream` / `--no-camera-stream`: Force enable/disable camera stream.
 
-## Logic Flow
-1. **Initialize**: Connect, calibrate gimbal, start camera stream.
-2. **Cruise**: Drive forward at 0.2m/s. Monitor IR distance and Visual edges.
-3. **Obstacle Event**:
-   - If IR < 0.5m OR Visual Edge Density > 5%:
-   - **Emergency Brake** (Red LED).
-4. **Scan Decision**:
-   - Check front distance. If > 1.5m, resume Cruise immediately (Efficient Scan).
-   - If blocked, start **Full Scan** (Blue LED + Sound).
-5. **Full Scan**:
-   - Turn chassis Left 60°, Right 60°.
-   - Record distances at 5 angles.
-   - Select **Furthest** direction.
-   - If all blocked (< 0.6m), select 180° (Back).
-6. **Execute Turn**:
-   - Turn chassis to target angle (Yellow LED).
-   - Resume Cruise.
+## Audio Assets
+
+- Custom audio uses RoboMaster `play_audio` (uploads to the robot then plays).
+- Format requirements: mono / 48kHz / wav
+- Default dog SFX pack directory: `robomaster_wander/assets/audio/oga_cc0_creature_sfx_wav`
+  - Refresh / generate via: `python3 robomaster_wander/tools/refresh_audio_assets.py`

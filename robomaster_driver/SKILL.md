@@ -51,10 +51,18 @@ Reads data from onboard sensors.
 ### Fire
 Fires the blaster.
 - `python3 robomaster_driver.py fire [type] [count]`
-  - `type`: `ir` (infrared/laser, default) or `bead` (water gel)
-  - `count`: 
-    - For `ir`: Duration in seconds (default 1.0).
-    - For `bead`: Number of shots (1-8, default 1).
+  - `type`: Currently forced to `ir` (infrared/laser). Passing `bead` is treated as `ir`.
+  - `count`: Number of `ir` triggers (default: 1).
+
+### Sound
+Plays a built-in system sound effect.
+- `python3 robomaster_driver.py sound <sound> [--times N] [--timeout SEC]`
+  - `sound`: System sound id (e.g. `0x103`) or alias: `attack` / `shoot` / `scanning` / `recognized` / `gimbal_move` / `count_down`
+
+### Audio
+Uploads and plays a custom wav file (RoboMaster `play_audio`).
+- `python3 robomaster_driver.py audio <path> [--timeout SEC]`
+  - Format requirements: mono / 48kHz / wav
 
 ### Status / Info
 Checks robot system information (Battery, SN, Version).
