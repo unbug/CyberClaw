@@ -375,8 +375,12 @@ class SlamPatrol:
                 self.robot.set_robot_mode(mode=robomaster.robot.CHASSIS_LEAD)
                 time.sleep(1)
                 # Ensure Gimbal is looking straight and level (Pitch 0)
-                self.gimbal.moveto(pitch=0, yaw=0, pitch_speed=30, yaw_speed=30).wait_for_completed()
-                self.gimbal.recenter().wait_for_completed()
+                ok = self.gimbal.moveto(pitch=0, yaw=0, pitch_speed=30, yaw_speed=30).wait_for_completed(timeout=3)
+                if not ok:
+                    raise RuntimeError("Gimbal moveto timeout")
+                ok = self.gimbal.recenter().wait_for_completed(timeout=3)
+                if not ok:
+                    raise RuntimeError("Gimbal recenter timeout")
                 
                 # Re-init LED Controller with fresh robot instance
                 self.speaker = Speaker(self.robot)
@@ -632,7 +636,6 @@ class SlamPatrol:
             
             # State Machine: "CRUISE", "SCAN", "TURN", "AVOID", "UNSTICK"
             state = "CRUISE"
-            state_enter_t = time.time()
             last_scan_t = 0.0
             last_pose = (0.0, 0.0)
             last_progress_t = time.time()
@@ -710,7 +713,6 @@ class SlamPatrol:
                         self.speaker.play(robomaster.robot.SOUND_ID_ATTACK) # Alert sound
                         self.chassis.drive_speed(x=0, y=0, z=0)
                         state = "AVOID"
-                        state_enter_t = now
                         self.led_ctl.set_state("AVOID", force=True)
                         continue
 
@@ -745,7 +747,6 @@ class SlamPatrol:
                             
                         self.hit_detected = False
                         state = "CRUISE"
-                        state_enter_t = now
                         self.led_ctl.set_state("CRUISE", force=True)
                         continue
 
@@ -766,18 +767,15 @@ class SlamPatrol:
                         if stuck and (now - self._last_unstick_t) > 5.0:
                             self.chassis.drive_speed(x=0, y=0, z=0)
                             state = "UNSTICK"
-                            state_enter_t = now
                         elif (preempt_scan and cooldown_ok) or (stuck and (now - last_scan_t) > 2.5):
                             self.chassis.drive_speed(x=0, y=0, z=0)
                             state = "SCAN"
-                            state_enter_t = now
                     
                     elif state == "AVOID":
                         self.led_ctl.set_state("AVOID", force=True)
                         self.chassis.drive_speed(x=0, y=0, z=0)
                         time.sleep(0.5)
                         state = "SCAN"
-                        state_enter_t = time.time()
                         
                     elif state == "SCAN":
                         self.led_ctl.set_state("SCAN", force=True)
@@ -789,7 +787,10 @@ class SlamPatrol:
                         # Ensure we are in CHASSIS_LEAD
                         self.robot.set_robot_mode(mode=robomaster.robot.CHASSIS_LEAD)
                         # Recenter Gimbal
-                        self.gimbal.recenter().wait_for_completed()
+                        try:
+                            self.gimbal.recenter().wait_for_completed(timeout=3)
+                        except Exception:
+                            pass
                         
                         measurements = {}
                         current_heading_offset = 0
@@ -804,8 +805,10 @@ class SlamPatrol:
                             if turn_needed != 0:
                                 # Normalize angle to -180 to 180
                                 turn_needed = (turn_needed + 180) % 360 - 180
-                                if not self._try_move(x=0, y=0, z=turn_needed, z_speed=45, timeout=5):
+                                ok_turn = self._try_move(x=0, y=0, z=turn_needed, z_speed=45, timeout=5)
+                                if not ok_turn:
                                     print("⚠️ Scan Turn Timeout!")
+                                    return 0.0, 0.0
                                 current_heading_offset += turn_needed
                             
                             # Wait for sensor reading to update (timestamp > move_time)
@@ -815,12 +818,17 @@ class SlamPatrol:
                             # Wait up to 1.0s for a fresh reading
                             for _ in range(10):
                                 time.sleep(0.1)
-                                if self.last_dist_time > move_end_time:
-                                    d = self.last_dist
+                                with self.lock:
+                                    dist_t = self.last_dist_time
+                                    dist = self.last_dist
+                                if dist_t > move_end_time:
+                                    d = dist
                                     break
                             else:
                                 print("⚠️ Sensor Lag: Using old distance")
-                                d = self.last_dist if self.last_dist else MAX_TOF_RANGE_M
+                                with self.lock:
+                                    dist = self.last_dist
+                                d = dist if dist else MAX_TOF_RANGE_M
 
                             # Update Map
                             with self.lock:
@@ -860,19 +868,33 @@ class SlamPatrol:
                             measurements[-120] = dm120_eff
                             print(f"Scan -120 deg: {dm120_eff:.2f}m")
                             
-                            # Find best direction (Strictly Max Distance)
                             best_ang = 0
                             max_d = -1.0
-                            
+
                             print("Scan Results:")
                             for ang, d in measurements.items():
                                 print(f"  Angle {ang}: {d:.2f}m")
                                 if d > max_d:
                                     max_d = d
                                     best_ang = ang
-                                elif d == max_d:
-                                    if abs(ang) < abs(best_ang):
+
+                            d0 = measurements.get(0, 0.0)
+                            if d0 >= 1.0 and (max_d - d0) <= 0.25:
+                                best_ang = 0
+                                max_d = d0
+                            else:
+                                turn_cost_per_60 = 0.25
+                                best_ang = 0
+                                best_score = -1e9
+                                for ang, d in measurements.items():
+                                    score = d - turn_cost_per_60 * (abs(ang) / 60.0)
+                                    if score > best_score:
+                                        best_score = score
                                         best_ang = ang
+                                    elif score == best_score:
+                                        if abs(ang) < abs(best_ang):
+                                            best_ang = ang
+                                max_d = measurements.get(best_ang, max_d)
                             
                             # Dead End Check (< 0.6m)
                             if max_d < 0.6:
@@ -889,11 +911,9 @@ class SlamPatrol:
                         self.target_turn_deg = final_turn
                         
                         state = "TURN"
-                        state_enter_t = time.time()
                     
                     elif state == "PLAN":
                         state = "CRUISE"
-                        state_enter_t = now
 
                     elif state == "UNSTICK":
                         self.led_ctl.set_state("AVOID", force=True)
@@ -904,8 +924,11 @@ class SlamPatrol:
                         with self.lock:
                             last_pose = (self.x, self.y)
                         last_progress_t = time.time()
-                        state = "SCAN"
-                        state_enter_t = time.time()
+                        if ok:
+                            last_scan_t = time.time()
+                            state = "CRUISE"
+                        else:
+                            state = "SCAN"
                     
                     elif state == "TURN":
                         self.led_ctl.set_state("TURN", force=True)
@@ -919,13 +942,7 @@ class SlamPatrol:
                                 print("⚠️ Turn Timeout! Wi-Fi unstable?")
                         
                         state = "CRUISE"
-                        state_enter_t = time.time()
                         self.led_ctl.set_state("CRUISE", force=True)
-
-                    if (now - state_enter_t) > 18.0 and state in ("SCAN", "TURN"):
-                        self.chassis.drive_speed(x=0, y=0, z=0)
-                        state = "UNSTICK"
-                        state_enter_t = now
 
                     # Visualization
                     if self.running:

@@ -129,11 +129,15 @@ class Client(object):
             raise e
 
     def stop(self):
-        if self._thread.is_alive():
+        if self._thread and self._thread.is_alive():
             self._running = False
             proto = protocol.ProtoGetVersion()
             msg = protocol.Msg(self.hostbyte, self.hostbyte, proto)
-            self._conn.send_self(msg.pack())
+            try:
+                if self._conn:
+                    self._conn.send_self(msg.pack())
+            except Exception:
+                pass
             self._thread.join()
         if self._conn:
             self._conn.close()

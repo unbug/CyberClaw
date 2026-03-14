@@ -2,7 +2,7 @@ import math
 import numpy as np
 
 class GridMapper:
-    def __init__(self, width_m=10.0, height_m=10.0, resolution=0.1, max_range_m=2.0):
+    def __init__(self, width_m=10.0, height_m=10.0, resolution=0.1, max_range_m=2.0, occ_inflate_radius=1, decay_rate=0.0):
         """
         Simple Occupancy Grid Mapper
         width_m, height_m: Map size in meters
@@ -14,6 +14,8 @@ class GridMapper:
         self.center_x = self.width // 2
         self.center_y = self.height // 2
         self.max_range_m = max_range_m
+        self.occ_inflate_radius = int(max(0, occ_inflate_radius))
+        self.decay_rate = float(max(0.0, min(1.0, decay_rate)))
         
         # 0.5 = unknown, 0.0 = free, 1.0 = occupied
         self.map = np.full((self.width, self.height), 0.5)
@@ -58,16 +60,31 @@ class GridMapper:
         
         # Get line points
         points = self.bresenham(start_ix, start_iy, end_ix, end_iy)
-        
-        for (ix, iy) in points:
+
+        if self.decay_rate > 0.0:
+            self.log_odds_map *= (1.0 - self.decay_rate)
+
+        free_points = points[:-1] if hit else points
+        for (ix, iy) in free_points:
             if 0 <= ix < self.width and 0 <= iy < self.height:
-                # Update free space
                 self.log_odds_map[ix][iy] += self.l_free
                 
         # Update hit point
         if hit:
             if 0 <= end_ix < self.width and 0 <= end_iy < self.height:
                 self.log_odds_map[end_ix][end_iy] += self.l_occ
+                r = self.occ_inflate_radius
+                if r > 0:
+                    for dx in range(-r, r + 1):
+                        for dy in range(-r, r + 1):
+                            if dx == 0 and dy == 0:
+                                continue
+                            if dx * dx + dy * dy > r * r:
+                                continue
+                            ix = end_ix + dx
+                            iy = end_iy + dy
+                            if 0 <= ix < self.width and 0 <= iy < self.height:
+                                self.log_odds_map[ix][iy] += 0.5 * self.l_occ
                 
         # Clamp values
         np.clip(self.log_odds_map, self.l_min, self.l_max, out=self.log_odds_map)
