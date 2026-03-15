@@ -8,17 +8,17 @@ except ImportError:
 
 
 def _drive(name: str, x: float, y: float, z: float, dur: float, tags: Tuple[str, ...], weight: float = 0.8, cooldown_s: float = 0.6) -> Macro:
-    steps = [Step("expression"), Step("drive", (dur, x, y, z)), Step("stop")]
+    steps = [Step("expression"), Step("drive", (dur, x, y, z)), Step("sleep", (0.06,)), Step("stop")]
     return Macro(name=name, steps=steps, tags=tags, weight=weight, cooldown_s=cooldown_s)
 
 
 def _spin(name: str, deg: float, tags: Tuple[str, ...], weight: float = 0.7, cooldown_s: float = 1.2) -> Macro:
-    steps = [Step("expression"), Step("spin", (deg, 140.0)), Step("stop")]
+    steps = [Step("expression"), Step("spin", (deg, 140.0)), Step("sleep", (0.06,)), Step("stop")]
     return Macro(name=name, steps=steps, tags=tags, weight=weight, cooldown_s=cooldown_s)
 
 
 def _look(name: str, yaw: float, tags: Tuple[str, ...], weight: float = 0.7, cooldown_s: float = 0.8) -> Macro:
-    steps = [Step("expression"), Step("gimbal_to", (0.0, yaw)), Step("sleep", (0.15,)), Step("gimbal_center")]
+    steps = [Step("expression"), Step("gimbal_to", (0.0, yaw)), Step("sleep", (0.22,)), Step("gimbal_center")]
     return Macro(name=name, steps=steps, tags=tags, weight=weight, cooldown_s=cooldown_s)
 
 
@@ -273,5 +273,189 @@ def build_micro_library(seed: int = 0) -> List[Macro]:
         _audio_pick("puppy_grumble", ("grunt",), 0.9, ("talk", "voice", "emotion"), 0.10, 10.0),
         _audio_pick("puppy_weird", ("weird", "troll", "misc"), 1.1, ("talk", "voice", "mischief"), 0.08, 14.0),
     ]
+
+    combo_defs = [
+        {
+            "style": "curious_scout",
+            "loco": [
+                Step("expression"),
+                Step("drive", (2.2, 0.20, 0.0, 14.0)),
+                Step("drive", (1.4, 0.16, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("movement", "explore", "curiosity", "random"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (3.8, -32, 32)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("curiosity", "look"),
+            "overlay": [
+                Step("expression"),
+                Step("audio_pick", (("sniff", "ooh", "cute"), 0.65)),
+                Step("sleep", (0.08,)),
+                Step("audio_pick", (("sniff", "ooh"), 0.60)),
+                Step("sleep", (0.08,)),
+                Step("audio_pick", (("breath", "grunt", "cute"), 0.75)),
+            ],
+            "overlay_tags": ("show", "emotion"),
+        },
+        {
+            "style": "prank_zoom",
+            "loco": [
+                Step("expression"),
+                Step("drive", (0.55, 0.38, 0.0, 0.0)),
+                Step("spin", (180.0, 140.0)),
+                Step("drive", (0.55, 0.38, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("movement", "random", "explore"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (1.4, -55, 55)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("look", "curiosity"),
+            "overlay": [
+                Step("expression"),
+                Step("audio_pick", (("weird", "troll", "misc"), 0.85)),
+                Step("sleep", (0.05,)),
+                Step("audio_pick", (("bark", "grunt", "cute"), 0.70)),
+                Step("sleep", (0.05,)),
+                Step("audio_pick", (("weird", "alien", "monster"), 0.80)),
+            ],
+            "overlay_tags": ("show", "emotion", "talk"),
+        },
+        {
+            "style": "guard_growl",
+            "loco": [
+                Step("expression"),
+                Step("spin", (60.0, 120.0)),
+                Step("drive", (1.9, 0.12, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("movement", "environment", "random"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_to", (0.0, 28.0)),
+                Step("sleep", (0.22,)),
+                Step("gimbal_to", (0.0, -28.0)),
+                Step("sleep", (0.22,)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("environment", "look"),
+            "overlay": [
+                Step("expression"),
+                Step("audio_pick", (("monster", "grunt"), 1.00)),
+                Step("sleep", (0.06,)),
+                Step("audio_pick", (("monster", "alien"), 1.00)),
+            ],
+            "overlay_tags": ("show", "emotion"),
+        },
+        {
+            "style": "sleepy_shuffle",
+            "loco": [
+                Step("expression"),
+                Step("drive", (3.6, 0.10, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("movement", "idle", "energy"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (2.4, -18, 18)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("look", "idle"),
+            "overlay": [
+                Step("expression"),
+                Step("audio_pick", (("breath", "snore"), 0.75)),
+                Step("sleep", (0.05,)),
+                Step("audio_pick", (("breath",), 0.70)),
+                Step("sleep", (0.05,)),
+                Step("audio_pick", (("snore",), 0.70)),
+            ],
+            "overlay_tags": ("idle", "emotion", "show"),
+        },
+        {
+            "style": "stomp_march",
+            "loco": [
+                Step("expression"),
+                Step("drive", (2.4, 0.18, 0.0, 0.0)),
+                Step("drive", (1.4, 0.14, 0.0, 18.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("movement", "explore", "random"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (2.6, -22, 22)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("look", "environment"),
+            "overlay": [
+                Step("expression"),
+                Step("audio_pick", (("stomp", "human", "grunt"), 0.60)),
+                Step("sleep", (0.05,)),
+                Step("audio_pick", (("stomp", "human", "grunt"), 0.60)),
+                Step("sleep", (0.05,)),
+                Step("audio_pick", (("bark", "grunt"), 0.55)),
+            ],
+            "overlay_tags": ("show", "emotion"),
+        },
+        {
+            "style": "celebrate_spin",
+            "loco": [
+                Step("expression"),
+                Step("spin", (300.0, 140.0)),
+                Step("drive", (0.6, 0.22, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("movement", "social", "emotion", "random"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (1.8, -30, 30)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("social", "look"),
+            "overlay": [
+                Step("expression"),
+                Step("audio_pick", (("cute", "bark"), 0.60)),
+                Step("sleep", (0.06,)),
+                Step("audio_pick", (("cute", "grunt"), 0.70)),
+                Step("sleep", (0.06,)),
+                Step("audio_pick", (("cute", "bark"), 0.60)),
+            ],
+            "overlay_tags": ("show", "social", "emotion"),
+        },
+    ]
+
+    for c in combo_defs:
+        style = str(c["style"])
+        macros.append(
+            Macro(
+                name=f"combo_{style}_loco",
+                steps=list(c["loco"]),
+                tags=tuple(c["loco_tags"]),
+                weight=0.10,
+                cooldown_s=10.0,
+            )
+        )
+        macros.append(
+            Macro(
+                name=f"combo_{style}_head",
+                steps=list(c["head"]),
+                tags=tuple(c["head_tags"]),
+                weight=0.10,
+                cooldown_s=10.0,
+            )
+        )
+        macros.append(
+            Macro(
+                name=f"combo_{style}_overlay",
+                steps=list(c["overlay"]),
+                tags=tuple(c["overlay_tags"]),
+                weight=0.10,
+                cooldown_s=10.0,
+            )
+        )
 
     return macros

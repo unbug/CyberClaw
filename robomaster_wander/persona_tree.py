@@ -28,8 +28,6 @@ class PersonaController:
             "danger_visual_m": 0.85,
             "safety_stop_dist_m": 0.3,
             "safety_visual_m": 0.45,
-            "battery_disable_fire_pct": 8.0,
-            "battery_stop_pct": 0.0,
             "autotune": {
                 "enabled": True,
                 "interval_s": 15.0,
@@ -68,24 +66,27 @@ class PersonaController:
         return len(self.macros)
 
     def tick(self, ctx: PersonaCtx) -> None:
+        self.bb["stat:block_reason"] = ""
         self.bb["now"] = ctx.now
         if getattr(ctx, "battery_pct", None) is not None:
             self.bb["battery_pct"] = int(ctx.battery_pct)
         self.bb["dist"] = ctx.dist
         update_affect(ctx, self.bb)
         apply_expression(ctx, self.bb)
-        self._maybe_print_stats(ctx)
         self._optimizer.tick(ctx, self.bb)
 
         self._maybe_social_and_trick(ctx)
-        enable_fire_now = bool(self.enable_fire) and (not self._low_battery_disable_fire()) and (not bool(self.bb.get("person_seen", False)))
+        enable_fire_now = bool(self.enable_fire) and (not bool(self.bb.get("person_seen", False)))
         self.bb["enable_fire"] = bool(enable_fire_now)
+        self._maybe_leave_area(ctx)
 
         if ctx.now < float(self.bb.get("stuck_cooldown_until", 0.0)):
+            self.bb["stat:block_reason"] = "stuck_cooldown"
             safe_stop(ctx)
             mood = str(self.bb.get("mood", "curious"))
             self._track_head.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
             self._track_overlay.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
+            self._maybe_print_stats(ctx)
             return
 
         avoid_active = self._avoid(ctx)
@@ -93,11 +94,18 @@ class PersonaController:
             mood = str(self.bb.get("mood", "curious"))
             self._track_head.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
             self._track_overlay.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
+            self._maybe_print_stats(ctx)
+            return
+
+        if self._safety_backoff(ctx):
+            mood = str(self.bb.get("mood", "curious"))
+            self._track_head.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
+            self._track_overlay.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
+            self._maybe_print_stats(ctx)
             return
 
         if not self._safety(ctx):
-            return
-        if self._low_battery_stop(ctx):
+            self._maybe_print_stats(ctx)
             return
 
         mood = str(self.bb.get("mood", "curious"))
@@ -107,6 +115,122 @@ class PersonaController:
         self._maybe_puppy_fx(ctx)
         self._maybe_sync_random_sound(ctx)
         self._track_overlay.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
+        self._watchdog_no_progress(ctx)
+        self._maybe_print_stats(ctx)
+
+    def _maybe_leave_area(self, ctx: PersonaCtx) -> None:
+        now = float(ctx.now)
+        person_seen = bool(self.bb.get("person_seen", False))
+        if person_seen:
+            return
+        dist = ctx.dist
+        try:
+            dist_v = float(dist) if dist is not None else None
+        except Exception:
+            dist_v = None
+        if dist_v is None:
+            return
+        wide_open = float(self.bb.get("wide_open_dist_m", 1.4))
+        if dist_v < wide_open:
+            return
+        try:
+            rx, ry, _ = ctx.pose
+            x = float(rx)
+            y = float(ry)
+        except Exception:
+            return
+        anchor = self.bb.get("area_anchor_pose")
+        if not (isinstance(anchor, (list, tuple)) and len(anchor) == 2):
+            self.bb["area_anchor_pose"] = (x, y)
+            self.bb["area_anchor_t"] = now
+            self.bb["area_last_leave_t"] = 0.0
+            return
+        ax, ay = anchor
+        try:
+            ax = float(ax)
+            ay = float(ay)
+        except Exception:
+            self.bb["area_anchor_pose"] = (x, y)
+            self.bb["area_anchor_t"] = now
+            return
+        drift = ((x - ax) ** 2 + (y - ay) ** 2) ** 0.5
+        if drift > 1.0:
+            self.bb["area_anchor_pose"] = (x, y)
+            self.bb["area_anchor_t"] = now
+            return
+        t0 = float(self.bb.get("area_anchor_t", now))
+        last_leave = float(self.bb.get("area_last_leave_t", 0.0))
+        if (now - t0) < 22.0:
+            return
+        if (now - last_leave) < 14.0:
+            return
+        if drift > 0.45:
+            return
+        self.bb["force_cat:locomotion"] = "adventure"
+        self.bb["force_cat_until:locomotion"] = now + 7.0
+        self.bb["force_cat_uses:locomotion"] = 2
+        self.bb["area_last_leave_t"] = now
+        self.bb["area_anchor_pose"] = (x, y)
+        self.bb["area_anchor_t"] = now
+
+    def _watchdog_no_progress(self, ctx: PersonaCtx) -> None:
+        now = float(ctx.now)
+        if bool(self.bb.get("person_seen", False)):
+            return
+        dist = ctx.dist
+        try:
+            dist_v = float(dist) if dist is not None else None
+        except Exception:
+            dist_v = None
+        if dist_v is not None and dist_v < 0.55:
+            return
+        try:
+            rx, ry, ryaw = ctx.pose
+            x = float(rx)
+            y = float(ry)
+            yaw = float(ryaw)
+        except Exception:
+            return
+
+        last_pose = self.bb.get("no_prog_pose")
+        if not (isinstance(last_pose, (list, tuple)) and len(last_pose) == 3):
+            self.bb["no_prog_pose"] = (x, y, yaw)
+            self.bb["no_prog_t"] = now
+            self.bb["no_prog_unstick_t"] = 0.0
+            return
+        lx, ly, lyaw = last_pose
+        try:
+            lx = float(lx)
+            ly = float(ly)
+            lyaw = float(lyaw)
+        except Exception:
+            self.bb["no_prog_pose"] = (x, y, yaw)
+            self.bb["no_prog_t"] = now
+            return
+        moved = ((x - lx) ** 2 + (y - ly) ** 2) ** 0.5
+        dy = abs((yaw - lyaw + 3.141592653589793) % (2 * 3.141592653589793) - 3.141592653589793)
+        if moved > 0.08 or dy > 0.28:
+            self.bb["no_prog_pose"] = (x, y, yaw)
+            self.bb["no_prog_t"] = now
+            return
+
+        t0 = float(self.bb.get("no_prog_t", now))
+        if (now - t0) < 14.0:
+            return
+        last_unstick = float(self.bb.get("no_prog_unstick_t", 0.0))
+        if (now - last_unstick) < 10.0:
+            return
+        try:
+            ok = bool(ctx.patrol._unstick())
+        except Exception:
+            ok = False
+        self.bb["no_prog_unstick_t"] = now
+        self.bb["no_prog_pose"] = (x, y, yaw)
+        self.bb["no_prog_t"] = now
+        if ok:
+            self.bb["force_cat:locomotion"] = "adventure"
+            self.bb["force_cat_until:locomotion"] = now + 6.0
+            self.bb["force_cat_uses:locomotion"] = 2
 
     def _rng(self, key: str, now: float) -> random.Random:
         seed = self.bb.get("rng_seed", None)
@@ -236,7 +360,7 @@ class PersonaController:
             dist_v = None
         if dist_v is not None and dist_v < 0.9:
             return
-        self.bb["audio_tags"] = ("cute", "bark", "sniff")
+        self.bb["audio_tags"] = ("cute", "bark", "sniff", "grunt", "breath")
         self.bb["audio_target_s"] = 1.0
         self.bb["force_macro:overlay"] = "dog_sync_audio"
         self.bb["force_macro_until:overlay"] = now + 4.0
@@ -273,6 +397,11 @@ class PersonaController:
         if person_seen and safe_for_trick and now > float(self.bb.get("last_trick_t", 0.0)) + 18.0:
             play = float(self.bb.get("need_play", 0.0))
             if play > 0.45:
+                if self._maybe_trigger_combo(now, mood=str(self.bb.get("mood", "curious")), person_seen=True):
+                    self.bb["last_trick_t"] = now
+                    rng = self._rng("trick_rng", now)
+                    self.bb["next_trick_t"] = now + rng.uniform(35.0, 65.0)
+                    return
                 self.bb["force_cat:overlay"] = "show"
                 self.bb["force_cat_until:overlay"] = now + 4.0
                 self.bb["force_cat_uses:overlay"] = 1
@@ -285,12 +414,62 @@ class PersonaController:
             mood = str(self.bb.get("mood", "curious"))
             play = float(self.bb.get("need_play", 0.0))
             if energy > 0.35 and mood != "scared" and play > 0.35:
+                if self._maybe_trigger_combo(now, mood=mood, person_seen=False):
+                    self.bb["last_trick_t"] = now
+                    rng = self._rng("trick_rng", now)
+                    self.bb["next_trick_t"] = now + rng.uniform(35.0, 65.0)
+                    return
                 self.bb["force_cat:overlay"] = "show"
                 self.bb["force_cat_until:overlay"] = now + 4.0
                 self.bb["force_cat_uses:overlay"] = 1
                 self.bb["last_trick_t"] = now
             rng = self._rng("trick_rng", now)
             self.bb["next_trick_t"] = now + rng.uniform(40.0, 85.0)
+
+    def _maybe_trigger_combo(self, now: float, mood: str, person_seen: bool) -> bool:
+        if self.bb.get("force_macro:overlay") or self.bb.get("force_macro:locomotion") or self.bb.get("force_macro:head"):
+            return False
+        if self.bb.get("force_cat:overlay") or self.bb.get("force_cat:locomotion") or self.bb.get("force_cat:head"):
+            return False
+        if now < float(self.bb.get("combo_cd_t", 0.0)):
+            return False
+
+        rng = self._rng("combo_rng", now)
+        if rng.random() > 0.55:
+            return False
+
+        m = str(mood or "curious")
+        styles = ["curious_scout", "prank_zoom", "guard_growl", "stomp_march", "celebrate_spin"]
+        if m == "sleepy" or float(self.bb.get("energy", 1.0)) < 0.28:
+            styles = ["sleepy_shuffle", "curious_scout"]
+        elif m == "scared":
+            styles = ["guard_growl", "curious_scout"]
+        elif m == "mischief":
+            styles = ["prank_zoom", "stomp_march", "guard_growl", "celebrate_spin"]
+        elif m == "angry":
+            styles = ["guard_growl", "stomp_march"]
+        if person_seen and "celebrate_spin" not in styles:
+            styles.append("celebrate_spin")
+
+        style = rng.choice(styles)
+        loco = f"combo_{style}_loco"
+        head = f"combo_{style}_head"
+        overlay = f"combo_{style}_overlay"
+        if (loco not in self._macro_by_name) or (head not in self._macro_by_name) or (overlay not in self._macro_by_name):
+            return False
+
+        until = now + 6.5
+        self.bb["force_macro:locomotion"] = loco
+        self.bb["force_macro_until:locomotion"] = until
+        self.bb["force_macro_uses:locomotion"] = 1
+        self.bb["force_macro:head"] = head
+        self.bb["force_macro_until:head"] = until
+        self.bb["force_macro_uses:head"] = 1
+        self.bb["force_macro:overlay"] = overlay
+        self.bb["force_macro_until:overlay"] = until
+        self.bb["force_macro_uses:overlay"] = 1
+        self.bb["combo_cd_t"] = now + 16.0
+        return True
 
     def _maybe_print_stats(self, ctx: PersonaCtx) -> None:
         now = float(ctx.now)
@@ -314,6 +493,19 @@ class PersonaController:
         loco = self.bb.get("track_last_macro:locomotion")
         head = self.bb.get("track_last_macro:head")
         overlay = self.bb.get("track_last_macro:overlay")
+        block = str(self.bb.get("stat:block_reason", ""))
+        sdk_owner = str(self.bb.get("sdk_action_owner", ""))
+        sdk_until = float(self.bb.get("sdk_action_until", 0.0))
+        sdk_rem = max(0.0, sdk_until - now) if sdk_owner else 0.0
+        al = str(self.bb.get("stat:track_active:locomotion", ""))
+        ah = str(self.bb.get("stat:track_active:head", ""))
+        ao = str(self.bb.get("stat:track_active:overlay", ""))
+        sl = str(self.bb.get("stat:track_step:locomotion", ""))
+        sh = str(self.bb.get("stat:track_step:head", ""))
+        so = str(self.bb.get("stat:track_step:overlay", ""))
+        next_l = max(0.0, float(self.bb.get("track_next:locomotion", 0.0)) - now)
+        next_h = max(0.0, float(self.bb.get("track_next:head", 0.0)) - now)
+        next_o = max(0.0, float(self.bb.get("track_next:overlay", 0.0)) - now)
 
         cats = []
         for c in ("adventure", "explore", "look", "social", "idle", "show", "random", "emotion", "movement", "environment", "prank", "dance", "talk", "energy"):
@@ -321,49 +513,65 @@ class PersonaController:
         cats.sort(key=lambda x: x[1], reverse=True)
         top = ",".join([f"{k}:{v}" for k, v in cats[:5] if v > 0])
         ps = "1" if bool(self.bb.get("person_seen", False)) else "0"
-        print(f"[stat] mood={mood} energy={energy:.2f} bat={bat_str}% dist={dist_str} needs={nb:.2f},{nc:.2f},{ns:.2f},{np:.2f} ps={ps} avoid={avoid_level} cat={last_cat} loco={loco} head={head} overlay={overlay} top={top}")
+        print(f"[stat] mood={mood} energy={energy:.2f} bat={bat_str}% dist={dist_str} needs={nb:.2f},{nc:.2f},{ns:.2f},{np:.2f} ps={ps} avoid={avoid_level} block={block} cat={last_cat} loco={loco} head={head} overlay={overlay} top={top}")
+        print(f"[health] sdk={sdk_owner} sdk_rem={sdk_rem:.1f}s next={next_l:.1f},{next_h:.1f},{next_o:.1f} active={al},{ah},{ao} step={sl}|{sh}|{so}")
 
     def _safety(self, ctx: PersonaCtx) -> bool:
         dist = ctx.dist
         if dist is not None and dist < float(self.bb.get("safety_stop_dist_m", 0.3)):
+            self.bb["stat:block_reason"] = "safety:tof"
             safe_stop(ctx)
             return False
         od = estimate_forward_obstacle(ctx)
         if od is not None and od < float(self.bb.get("safety_visual_m", 0.45)):
+            self.bb["stat:block_reason"] = "safety:visual"
             safe_stop(ctx)
             return False
         return True
 
-    def _low_battery_disable_fire(self) -> bool:
-        bat = self.bb.get("battery_pct")
-        if bat is None:
+    def _safety_backoff(self, ctx: PersonaCtx) -> bool:
+        now = float(ctx.now)
+        person_seen = bool(self.bb.get("person_seen", False))
+        if person_seen:
             return False
+        dist = ctx.dist
         try:
-            p = float(bat)
+            dist_v = float(dist) if dist is not None else None
         except Exception:
+            dist_v = None
+        if dist_v is None:
             return False
-        thresh = float(self.bb.get("battery_disable_fire_pct", 12.0))
-        return p <= thresh
-
-    def _low_battery_stop(self, ctx: PersonaCtx) -> bool:
-        bat = self.bb.get("battery_pct")
-        if bat is None:
+        stop_dist = float(self.bb.get("safety_stop_dist_m", 0.3))
+        until = float(self.bb.get("safety_backoff_until", 0.0))
+        if now < until:
+            side = float(self.bb.get("safety_backoff_side", 1.0))
+            try:
+                ctx.patrol.chassis.drive_speed(x=-0.16, y=0.0, z=55.0 * side)
+            except Exception:
+                try:
+                    nf = getattr(ctx.patrol, "_note_action_failure", None)
+                    if callable(nf):
+                        nf()
+                except Exception:
+                    raise
+            self.bb["stat:block_reason"] = "safety:backoff"
+            return True
+        if dist_v >= stop_dist:
             return False
+        rng = self._rng("safety_backoff_rng", now)
+        side = 1.0 if rng.random() < 0.5 else -1.0
+        self.bb["safety_backoff_side"] = side
+        self.bb["safety_backoff_until"] = now + 0.75
+        self.bb["stat:block_reason"] = "safety:backoff"
         try:
-            p = float(bat)
+            ctx.patrol.chassis.drive_speed(x=-0.16, y=0.0, z=55.0 * side)
         except Exception:
-            return False
-        stop_pct = float(self.bb.get("battery_stop_pct", 0.0))
-        if stop_pct <= 0.0:
-            return False
-        if p > stop_pct:
-            return False
-        safe_stop(ctx)
-        try:
-            ctx.patrol.running = False
-        except Exception:
-            pass
-        print(f"[battery] stop at {p:.0f}%")
+            try:
+                nf = getattr(ctx.patrol, "_note_action_failure", None)
+                if callable(nf):
+                    nf()
+            except Exception:
+                raise
         return True
 
     def _avoid(self, ctx: PersonaCtx) -> bool:
@@ -385,6 +593,7 @@ class PersonaController:
                     phase = "forward"
                     self.bb["avoid_phase"] = phase
                     self.bb["avoid_phase_until"] = seq_until
+            self.bb["stat:block_reason"] = f"avoid:{phase}"
 
             dist = ctx.dist
             last_log_t = float(self.bb.get("avoid_log_t", 0.0))
@@ -400,14 +609,24 @@ class PersonaController:
                     back_z = float(self.bb.get("avoid_back_z", 70.0)) * side
                     ctx.patrol.chassis.drive_speed(x=back_x, y=back_y, z=back_z)
                 except Exception:
-                    pass
+                    try:
+                        nf = getattr(ctx.patrol, "_note_action_failure", None)
+                        if callable(nf):
+                            nf()
+                    except Exception:
+                        raise
                 return True
             if phase == "turn":
                 try:
                     turn_z = float(self.bb.get("avoid_turn_z", 120.0)) * side
                     ctx.patrol.chassis.drive_speed(x=0.0, y=0.0, z=turn_z)
                 except Exception:
-                    pass
+                    try:
+                        nf = getattr(ctx.patrol, "_note_action_failure", None)
+                        if callable(nf):
+                            nf()
+                    except Exception:
+                        raise
                 return True
             if dist is not None and dist < 0.12:
                 self.bb["avoid_phase"] = "back"
@@ -422,7 +641,12 @@ class PersonaController:
                 forward_z = float(self.bb.get("avoid_forward_z", 45.0)) * side
                 ctx.patrol.chassis.drive_speed(x=forward_x, y=0.0, z=forward_z)
             except Exception:
-                pass
+                try:
+                    nf = getattr(ctx.patrol, "_note_action_failure", None)
+                    if callable(nf):
+                        nf()
+                except Exception:
+                    raise
             return True
 
         dist = ctx.dist
@@ -456,6 +680,7 @@ class PersonaController:
         self.bb["avoid_side"] = side
 
         if level >= 3:
+            self.bb["stat:block_reason"] = "avoid:unstick"
             last_log_t = float(self.bb.get("avoid_log_t", 0.0))
             if (ctx.now - last_log_t) > 1.0:
                 d_str = f"{dist:.2f}m" if dist is not None else "None"
@@ -488,6 +713,7 @@ class PersonaController:
             return True
 
         self.bb["avoid_phase"] = "back"
+        self.bb["stat:block_reason"] = "avoid:start"
         back_dur = 0.8 + 0.3 * (level - 1)
         turn_dur = 1.0
         forward_dur = 3.5
@@ -513,5 +739,10 @@ class PersonaController:
         try:
             ctx.patrol.chassis.drive_speed(x=float(self.bb.get("avoid_back_x", -0.18)), y=0.0, z=70.0 * side)
         except Exception:
-            pass
+            try:
+                nf = getattr(ctx.patrol, "_note_action_failure", None)
+                if callable(nf):
+                    nf()
+            except Exception:
+                raise
         return True

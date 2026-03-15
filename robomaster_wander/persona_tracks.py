@@ -53,6 +53,45 @@ class TrackRunner:
         self.macros = _filter_macros(all_macros, track.required_tags, track.forbidden_tags, track.allowed_kinds)
         self.active: Optional[MacroPlayer] = None
 
+    def _step_summary(self) -> str:
+        if self.active is None:
+            return ""
+        try:
+            step = self.active.macro.steps[self.active.i]
+        except Exception:
+            return ""
+        k = getattr(step, "kind", "")
+        args = getattr(step, "args", ())
+        try:
+            if k == "audio" and args:
+                import os
+                return f"audio:{os.path.basename(str(args[0]))}"
+            if k == "audio_pick":
+                return "audio_pick"
+            if k == "move" and len(args) >= 3:
+                return f"move:{float(args[0]):.2f},{float(args[1]):.2f},{float(args[2]):.1f}"
+            if k == "drive" and len(args) >= 4:
+                return f"drive:{float(args[0]):.2f}s v={float(args[1]):.2f} z={float(args[3]):.0f}"
+            if k == "cruise" and args:
+                return f"cruise:{float(args[0]):.2f}s"
+            if k == "spin" and len(args) >= 2:
+                return f"spin:{float(args[0]):.0f}@{float(args[1]):.0f}"
+            if k == "gimbal_sweep" and args:
+                return f"gimbal_sweep:{float(args[0]):.2f}s"
+            if k == "gimbal_to" and len(args) >= 2:
+                return f"gimbal_to:{float(args[0]):.0f},{float(args[1]):.0f}"
+            if k == "sound" and args:
+                return f"sound:{int(args[0])}"
+            if k == "sound_seq" and args:
+                seq = args[0]
+                n = len(seq) if isinstance(seq, (list, tuple)) else 0
+                return f"sound_seq:{n}"
+            if k.startswith("fire"):
+                return k
+        except Exception:
+            return str(k)
+        return str(k)
+
     def _rng(self, bb: Blackboard, key: str, now: float) -> random.Random:
         seed = bb.get("rng_seed", None)
         c = int(bb.get(key, 0))
@@ -77,12 +116,31 @@ class TrackRunner:
                 if "overlay_probability" in cfg:
                     self.track.overlay_probability = float(cfg["overlay_probability"])
         if self.active is not None:
+            bb[f"stat:track_active:{self.track.name}"] = getattr(self.active.macro, "name", "")
+            try:
+                bb[f"stat:track_step:{self.track.name}"] = f"{int(self.active.i) + 1}/{len(self.active.macro.steps)}:{self._step_summary()}"
+            except Exception:
+                bb[f"stat:track_step:{self.track.name}"] = self._step_summary()
+        else:
+            bb[f"stat:track_active:{self.track.name}"] = ""
+            bb[f"stat:track_step:{self.track.name}"] = ""
+        if self.active is not None:
             fm = bb.get(f"force_macro:{self.track.name}")
             if fm and now < float(bb.get(f"force_macro_until:{self.track.name}", 0.0)) and self.track.name == "overlay":
                 forced = str(fm)
                 if forced and forced != getattr(self.active.macro, "name", None):
-                    self.active = None
-            else:
+                    step_kind = None
+                    try:
+                        step_kind = self.active.macro.steps[self.active.i].kind
+                    except Exception:
+                        step_kind = None
+                    if step_kind in ("sleep", "utter", "led", "expression", "stop"):
+                        try:
+                            self.active.abort(bb)
+                        except Exception:
+                            pass
+                        self.active = None
+            if self.active is not None:
                 done = self.active.tick(ctx, bb)
                 if done:
                     self.active = None
@@ -130,6 +188,7 @@ class TrackRunner:
             return
 
         local_bb = dict(bb)
+        local_bb["track_name"] = str(self.track.name)
         local_bb["enable_fire"] = bool(enable_fire)
         fc = bb.get(f"force_cat:{self.track.name}")
         if fc:
@@ -143,6 +202,8 @@ class TrackRunner:
             if k.startswith("cd:") or k.endswith("_counter") or k.endswith("_t") or k.startswith("rng_"):
                 bb[k] = v
             if k.startswith("stat:"):
+                bb[k] = v
+            if k.startswith("intent_") or k.startswith("recent_"):
                 bb[k] = v
         if "force_cat" in local_bb or f"force_cat:{self.track.name}" in bb:
             if local_bb.get("force_cat"):
@@ -158,6 +219,8 @@ class TrackRunner:
         bb[f"stat:track:{self.track.name}"] = int(bb.get(f"stat:track:{self.track.name}", 0)) + 1
         print(f"[persona] track={self.track.name} macro={chosen.name} tags={','.join(chosen.tags)}")
         self.active = MacroPlayer(chosen)
+        bb[f"stat:track_active:{self.track.name}"] = chosen.name
+        bb[f"stat:track_step:{self.track.name}"] = f"1/{len(chosen.steps)}:{chosen.steps[0].kind}" if chosen.steps else ""
 
 
 def build_default_tracks(all_macros: Sequence[Macro]) -> Tuple[TrackRunner, TrackRunner, TrackRunner]:

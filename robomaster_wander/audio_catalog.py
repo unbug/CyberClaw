@@ -3,7 +3,7 @@ import os
 import random
 import wave
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ def _infer_tags(name: str) -> Tuple[str, ...]:
         return ("cute", "voice", "social")
     if stem == "howl":
         return ("howl", "voice", "emotion")
-    if stem == "snore":
+    if stem == "snore" or stem.startswith("snore_"):
         return ("snore", "sleep", "idle")
     if stem == "nose":
         return ("sniff", "curiosity", "explore")
@@ -32,7 +32,7 @@ def _infer_tags(name: str) -> Tuple[str, ...]:
         return ("yelp", "hurt", "scared")
     if stem.startswith("grunt_"):
         return ("grunt", "emotion")
-    if stem == "breath":
+    if stem == "breath" or stem.startswith("breath_"):
         return ("breath", "idle")
     if stem.startswith("eat_"):
         return ("eat", "idle")
@@ -52,8 +52,18 @@ def _infer_tags(name: str) -> Tuple[str, ...]:
         return ("troll", "mischief")
     if stem.startswith("monster_") or stem.startswith("roar_") or stem.startswith("scream_"):
         return ("monster", "mischief")
+    if stem.startswith("slime_"):
+        return ("slime", "mischief")
     if stem.startswith("alien_") or stem.startswith("bug_"):
         return ("alien", "mischief")
+    if stem.startswith("attack_"):
+        return ("attack", "mischief")
+    if stem.startswith("die_"):
+        return ("die", "hurt", "scared")
+    if stem.startswith("human_"):
+        return ("human", "voice", "social")
+    if stem.startswith("stomp_"):
+        return ("stomp", "movement")
     if stem == "ooh":
         return ("ooh", "curiosity")
     return ("any",)
@@ -91,16 +101,24 @@ def load_default_catalog() -> List[AudioClip]:
     global _CACHE
     if _CACHE is not None:
         return _CACHE
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets", "audio", "oga_cc0_creature_sfx_wav"))
-    durations = _durations_from_json(base_dir)
     clips: List[AudioClip] = []
-    if os.path.isdir(base_dir):
+
+    roots: List[Tuple[str, str]] = [
+        ("oga_cc0_creature_sfx_wav", os.path.join("assets", "audio", "oga_cc0_creature_sfx_wav")),
+        ("oga_cc0_creature_sfx_2_wav", os.path.join("assets", "audio", "oga_cc0_creature_sfx_2_wav")),
+    ]
+
+    for dir_name, rel_prefix in roots:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "assets", "audio", dir_name))
+        durations = _durations_from_json(base_dir)
+        if not os.path.isdir(base_dir):
+            continue
         for fn in sorted(os.listdir(base_dir)):
             if not fn.lower().endswith(".wav"):
                 continue
             if fn.startswith("_"):
                 continue
-            rel = os.path.join("assets", "audio", "oga_cc0_creature_sfx_wav", fn)
+            rel = os.path.join(rel_prefix, fn)
             abs_path = os.path.join(base_dir, fn)
             dur = durations.get(fn)
             if dur is None:
@@ -114,22 +132,39 @@ def load_default_catalog() -> List[AudioClip]:
     return clips
 
 
-def pick_clip(tags: Sequence[str], target_s: float, rng: random.Random) -> Optional[AudioClip]:
+def pick_clip(tags: Sequence[str], target_s: float, rng: random.Random, exclude_rel_paths: Optional[Sequence[str]] = None) -> Optional[AudioClip]:
     want: Set[str] = {str(t).lower() for t in (tags or []) if t}
     clips = load_default_catalog()
     if not clips:
         return None
-    if not want or "any" in want:
-        pool = clips
+    exclude: Set[str] = set()
+    if exclude_rel_paths:
+        for p in exclude_rel_paths:
+            if not p:
+                continue
+            exclude.add(str(p))
+
+    def _matches(c: AudioClip) -> bool:
+        if (not want) or ("any" in want):
+            return True
+        return bool(want.intersection({t.lower() for t in c.tags}))
+
+    strict: List[AudioClip]
+    if (not want) or ("any" in want):
+        strict = clips
     else:
-        pool = [c for c in clips if want.intersection({t.lower() for t in c.tags})]
-        if not pool:
-            pool = clips
+        strict = [c for c in clips if _matches(c)]
+        if not strict:
+            strict = clips
+
+    pool = [c for c in strict if c.rel_path not in exclude]
+    if not pool:
+        pool = strict
     ts = max(0.05, float(target_s))
     scored: List[Tuple[float, AudioClip]] = []
     for c in pool:
         d = abs(float(c.dur_s) - ts)
         scored.append((d, c))
     scored.sort(key=lambda x: x[0])
-    top = scored[: min(8, len(scored))]
+    top = scored[: min(20, len(scored))]
     return rng.choice([c for _d, c in top])

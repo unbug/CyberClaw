@@ -1,6 +1,5 @@
 import io
 import json
-import math
 import os
 import struct
 import subprocess
@@ -178,19 +177,80 @@ def _process_keep_duration(src_any: str, dst_wav: str) -> float:
     return (len(frames) / 2) / float(sr)
 
 
-def _download_to_tmp(url: str, tmp_dir: str, filename: str) -> str:
-    os.makedirs(tmp_dir, exist_ok=True)
-    path = os.path.join(tmp_dir, filename)
-    data = _http_get_bytes(url, timeout_s=60.0)
-    with open(path, "wb") as f:
-        f.write(data)
-    return path
-
-
 def _extract_zip(zip_bytes: bytes, out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         zf.extractall(out_dir)
+
+
+def _iter_audio_files(root_dir: str) -> list[str]:
+    out: list[str] = []
+    for dp, _dns, fns in os.walk(root_dir):
+        for fn in fns:
+            lo = fn.lower()
+            if lo.endswith((".ogg", ".wav", ".mp3", ".aiff", ".aif", ".m4a")):
+                out.append(os.path.join(dp, fn))
+    out.sort()
+    return out
+
+
+def _clear_dir(dir_path: str) -> None:
+    if not os.path.exists(dir_path):
+        return
+    for dp, dns, fns in os.walk(dir_path, topdown=False):
+        for fn in fns:
+            try:
+                os.remove(os.path.join(dp, fn))
+            except Exception:
+                pass
+        for dn in dns:
+            try:
+                os.rmdir(os.path.join(dp, dn))
+            except Exception:
+                pass
+
+
+def _download_oga_zip_with_fallbacks(urls: list[str]) -> tuple[str, bytes]:
+    last_err = None
+    for url in urls:
+        try:
+            return url, _http_get_bytes(url, timeout_s=120.0)
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err if last_err is not None else RuntimeError("all download urls failed")
+
+
+def _process_pack_zip(
+    *,
+    tmp_dir: str,
+    out_dir: str,
+    slug: str,
+    zip_urls: list[str],
+    out_subdir: str,
+) -> dict:
+    used_url, zip_bytes = _download_oga_zip_with_fallbacks(zip_urls)
+    src_dir = os.path.join(tmp_dir, slug)
+    _clear_dir(src_dir)
+    os.makedirs(src_dir, exist_ok=True)
+    _extract_zip(zip_bytes, src_dir)
+
+    wav_dir = os.path.join(out_dir, out_subdir)
+    _clear_dir(wav_dir)
+    os.makedirs(wav_dir, exist_ok=True)
+
+    out_durations: dict = {}
+    for src in _iter_audio_files(src_dir):
+        base = os.path.splitext(os.path.basename(src))[0] + ".wav"
+        dst = os.path.join(wav_dir, base)
+        d = _process_keep_duration(src, dst)
+        out_durations[base] = float(d)
+        time.sleep(0.06)
+
+    with open(os.path.join(wav_dir, "_durations.json"), "w", encoding="utf-8") as f:
+        json.dump(out_durations, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    return {"used_url": used_url, "wav_dir": wav_dir, "count": len(out_durations)}
 
 
 def main() -> None:
@@ -242,6 +302,43 @@ def main() -> None:
 
     with open(os.path.join(dog_wav_dir, "_durations.json"), "w", encoding="utf-8") as f:
         json.dump(out_durations, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    packs = [
+        {
+            "name": "80 CC0 creture SFX #2",
+            "slug": "oga_cc0_creature_sfx_2",
+            "page": "https://opengameart.org/content/80-cc0-creture-sfx-2",
+            "license": "CC0",
+            "zip_urls": [
+                "https://opengameart.org/sites/default/files/80-CC0-creature-sfx-2.zip",
+                "https://opengameart.org/sites/default/files/80-CC0-creature-SFX-2.zip",
+                "https://opengameart.org/sites/default/files/80-CC0-creture-sfx-2.zip",
+            ],
+            "out_subdir": "oga_cc0_creature_sfx_2_wav",
+        },
+    ]
+
+    for p in packs:
+        info = _process_pack_zip(
+            tmp_dir=tmp_dir,
+            out_dir=out_dir,
+            slug=str(p["slug"]),
+            zip_urls=list(p["zip_urls"]),
+            out_subdir=str(p["out_subdir"]),
+        )
+        rel_wav_dir = os.path.relpath(str(info["wav_dir"]), root).replace("\\", "/")
+        attrib_lines += [
+            f"- 目录：{rel_wav_dir}",
+            f"  - 来源：{p['page']}",
+            f"  - 许可：{p['license']}",
+            f"  - 下载：{info['used_url']}",
+            "  - 说明：由原始音频转码为 48kHz/mono/16-bit wav，音量归一化并做淡入淡出",
+            f"  - 文件数：{int(info['count'])}",
+            "",
+            f"- 文件：{rel_wav_dir}/_durations.json",
+            "  - 说明：用于行为与音效时长匹配的索引（生成文件）",
+            "",
+        ]
 
     with open(os.path.join(out_dir, "ATTRIBUTION.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(attrib_lines).rstrip() + "\n")

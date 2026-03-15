@@ -9,6 +9,21 @@ from collections import deque
 
 # Lock file path
 LOCK_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'wander.lock'))
+STOP_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'wander.stop'))
+
+def _pid_cmdline(pid: int) -> str:
+    try:
+        import subprocess
+        out = subprocess.check_output(["ps", "-p", str(int(pid)), "-o", "command="], stderr=subprocess.DEVNULL)
+        return out.decode(errors="ignore").strip()
+    except Exception:
+        return ""
+
+def _pid_is_wander(pid: int) -> bool:
+    cmd = _pid_cmdline(pid).lower()
+    if not cmd:
+        return False
+    return "robomaster_wander" in cmd
 
 # Add SDK path
 sdk_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../vendor'))
@@ -136,6 +151,11 @@ class SlamPatrol:
         self.verbose = verbose
         self.viz_enabled = bool(viz) and (plt is not None)
         self.camera_stream_override = camera_stream
+        try:
+            if os.path.exists(STOP_FILE):
+                os.remove(STOP_FILE)
+        except Exception:
+            pass
         self.create_lock_file()
         
         # Enable SDK logging if verbose
@@ -325,16 +345,25 @@ class SlamPatrol:
             self._note_action_failure()
             return False
 
-        ok = self._try_move(z=turn, z_speed=120, timeout=8)
-        return bool(ok)
+        try:
+            z_speed = 120.0
+            if abs(float(turn)) <= 1e-6 or abs(z_speed) <= 1e-6:
+                return True
+            dur = abs(float(turn)) / abs(float(z_speed))
+            z = float(z_speed) if float(turn) >= 0.0 else -float(z_speed)
+            self.chassis.drive_speed(x=0.0, y=0.0, z=z)
+            time.sleep(max(0.2, min(2.6, float(dur))))
+            self.chassis.drive_speed(x=0.0, y=0.0, z=0.0)
+            time.sleep(0.1)
+            return True
+        except Exception:
+            self._note_action_failure()
+            return False
 
     def create_lock_file(self):
         if os.path.exists(LOCK_FILE):
             print(f"Lock file exists: {LOCK_FILE}")
             print("Another instance might be running. Please stop it first.")
-            # Check if process is actually running?
-            # For simplicity, we just overwrite or fail.
-            # Let's try to read PID and check.
             try:
                 with open(LOCK_FILE, 'r') as f:
                     raw = f.read().strip()
@@ -345,9 +374,12 @@ class SlamPatrol:
                 except Exception:
                     pid = int(raw)
                 try:
-                    os.kill(pid, 0) # Check if process exists
-                    print(f"Process {pid} is running. Exiting.")
-                    sys.exit(1)
+                    os.kill(pid, 0)
+                    if _pid_is_wander(pid):
+                        print(f"Process {pid} is running. Exiting.")
+                        sys.exit(1)
+                    print(f"Lock PID {pid} exists but does not look like robomaster_wander. Removing stale lock.")
+                    os.remove(LOCK_FILE)
                 except OSError:
                     print("Stale lock file found. Removing.")
                     os.remove(LOCK_FILE)
@@ -365,10 +397,28 @@ class SlamPatrol:
     def cleanup(self):
         if os.path.exists(LOCK_FILE):
             os.remove(LOCK_FILE)
+        if os.path.exists(STOP_FILE):
+            try:
+                os.remove(STOP_FILE)
+            except Exception:
+                pass
         self.stop()
 
     def stop_signal(self, signum, _frame):
-        print(f"Received signal {signum}. Stopping...")
+        if int(signum) == int(getattr(signal, "SIGTERM", 15)) and (not os.path.exists(STOP_FILE)):
+            try:
+                pid = os.getpid()
+                cmd = _pid_cmdline(pid)
+                print(f"Received signal {signum} but no stop file. Ignoring. pid={pid} cmd={cmd}")
+            except Exception:
+                print(f"Received signal {signum} but no stop file. Ignoring.")
+            return
+        try:
+            pid = os.getpid()
+            cmd = _pid_cmdline(pid)
+            print(f"Received signal {signum}. Stopping... pid={pid} cmd={cmd}")
+        except Exception:
+            print(f"Received signal {signum}. Stopping...")
         self.running = False
         self.cleanup()
         sys.exit(0)
@@ -1194,6 +1244,11 @@ def stop_robot(conn_type: str = "sta"):
             except Exception:
                 time.sleep(0.35)
         return False
+    try:
+        with open(STOP_FILE, "w") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
 
     if os.path.exists(LOCK_FILE):
         try:
@@ -1208,11 +1263,24 @@ def stop_robot(conn_type: str = "sta"):
                 lock_conn = data.get("conn")
             except Exception:
                 pid = int(raw)
-            print(f"Stopping process {pid}...")
-            os.kill(pid, signal.SIGTERM)
+            if pid is not None:
+                try:
+                    os.kill(pid, 0)
+                except Exception:
+                    pid = None
+            if pid is not None and (not _pid_is_wander(pid)):
+                print(f"Lock PID {pid} does not look like robomaster_wander. Ignoring lock.")
+                try:
+                    os.remove(LOCK_FILE)
+                except Exception:
+                    pass
+                pid = None
+            if pid is not None:
+                print(f"Stopping process {pid}...")
+                os.kill(pid, signal.SIGTERM)
             # Wait a bit
             time.sleep(1)
-            if os.path.exists(LOCK_FILE):
+            if pid is not None and os.path.exists(LOCK_FILE):
                 print("Force killing...")
                 os.kill(pid, signal.SIGKILL)
                 os.remove(LOCK_FILE)

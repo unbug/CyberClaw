@@ -28,6 +28,10 @@ class MacroPlayer:
         self.t0 = None
         self.state = {}
 
+    def abort(self, bb: Blackboard) -> None:
+        self._sdk_action_release(bb)
+        self.reset()
+
     def _sdk_action_owner(self, kind: str) -> str:
         return f"{self.macro.name}:{kind}:{self.i}"
 
@@ -36,7 +40,10 @@ class MacroPlayer:
         cur_owner = str(bb.get("sdk_action_owner", "")) if bb.get("sdk_action_owner") is not None else ""
         until = float(bb.get("sdk_action_until", 0.0))
         if now < until and cur_owner and cur_owner != owner:
-            return False
+            if (until - now) <= 10.0:
+                return False
+            bb["sdk_action_owner"] = ""
+            bb["sdk_action_until"] = 0.0
         bb["sdk_action_owner"] = owner
         bb["sdk_action_until"] = now + float(ttl_s)
         self.state["sdk_action_owner"] = owner
@@ -51,9 +58,71 @@ class MacroPlayer:
             bb["sdk_action_until"] = 0.0
         self.state.pop("sdk_action_owner", None)
 
+    def _step_timeout_s(self, step: Step) -> Optional[float]:
+        k = step.kind
+        try:
+            if k == "sleep":
+                return float(step.args[0]) + 0.6
+            if k == "drive":
+                return float(step.args[0]) + 1.2
+            if k == "spin":
+                deg, z_speed = step.args
+                z_speed = float(z_speed)
+                if abs(z_speed) <= 1e-6:
+                    return 0.5
+                return abs(float(deg) / z_speed) + 1.2
+            if k == "cruise":
+                return float(step.args[0]) + 1.5
+            if k == "move":
+                timeout = float(step.args[-1]) if step.args else 6.0
+                return max(1.0, timeout) + 1.5
+            if k == "gimbal_to" or k == "gimbal_center":
+                return 4.0
+            if k == "gimbal_sweep":
+                return float(step.args[0]) + 2.0
+            if k == "sound":
+                return 2.5
+            if k == "sound_seq":
+                seq, interval_s = step.args
+                if not isinstance(seq, (list, tuple)):
+                    return 2.0
+                return len(seq) * float(interval_s) + 3.0
+            if k == "audio_pick":
+                return 2.0
+            if k == "audio":
+                dur = float(step.args[1]) if len(step.args) > 1 else 3.0
+                return max(2.0, dur) + 4.0
+            if k == "fire_burst":
+                duration_s = float(step.args[0]) if step.args else 2.0
+                return max(1.0, duration_s) + 2.0
+            if k == "fire_repeat":
+                count, interval_s = step.args
+                return max(1.0, float(count) * max(0.05, float(interval_s))) + 3.0
+        except Exception:
+            return 6.0
+        return None
+
     def tick(self, ctx: PersonaCtx, bb: Blackboard) -> bool:
         if self.i >= len(self.macro.steps):
             return True
+        now = float(ctx.now)
+        last_i = int(self.state.get("_step_i", -1))
+        if last_i != self.i:
+            self.state["_step_i"] = int(self.i)
+            self.state["_step_t0"] = now
+        else:
+            t0 = float(self.state.get("_step_t0", now))
+            limit = self._step_timeout_s(self.macro.steps[self.i])
+            if limit is not None and (now - t0) > float(limit):
+                try:
+                    safe_stop(ctx)
+                except Exception:
+                    pass
+                self._sdk_action_release(bb)
+                self.i += 1
+                self.t0 = None
+                self.state = {}
+                return self.i >= len(self.macro.steps)
         step = self.macro.steps[self.i]
         ok = self._run_step(ctx, bb, step)
         if ok:
@@ -488,12 +557,29 @@ class MacroPlayer:
                 c = int(bb.get("audio_pick_counter", 0))
                 bb["audio_pick_counter"] = c + 1
                 rng = random.Random(hash((seed, "audio_pick", c, int(ctx.now * 10))))
+                exclude: List[str] = []
+                recent = bb.get("audio_recent")
+                if isinstance(recent, list):
+                    exclude.extend([str(x) for x in recent if x])
+                bad = bb.get("audio_bad")
+                if isinstance(bad, dict):
+                    for p, until in bad.items():
+                        try:
+                            if now < float(until):
+                                exclude.append(str(p))
+                        except Exception:
+                            continue
                 try:
                     try:
                         from .audio_catalog import pick_clip
                     except ImportError:
                         from audio_catalog import pick_clip
-                    clip = pick_clip(tags=list(tags) if isinstance(tags, (list, tuple)) else [str(tags)], target_s=dur_s, rng=rng)
+                    clip = pick_clip(
+                        tags=list(tags) if isinstance(tags, (list, tuple)) else [str(tags)],
+                        target_s=dur_s,
+                        rng=rng,
+                        exclude_rel_paths=exclude,
+                    )
                 except Exception:
                     clip = None
                 if clip is None:
@@ -518,6 +604,12 @@ class MacroPlayer:
             if not isinstance(path, str) or not path:
                 return True
             bb["last_audio_t"] = now
+            rel_key = str(path)
+            try:
+                import os
+                bb["stat:audio_last"] = os.path.basename(rel_key)
+            except Exception:
+                bb["stat:audio_last"] = rel_key
             import os
             if not os.path.isabs(path):
                 path = os.path.abspath(os.path.join(os.path.dirname(__file__), path))
@@ -546,8 +638,27 @@ class MacroPlayer:
             try:
                 self.state["audio_action"] = ctx.patrol.robot.play_audio(path)
                 self.state["audio_deadline"] = ctx.now + max(0.2, dur_s + 2.0)
+                recent = bb.get("audio_recent")
+                if not isinstance(recent, list):
+                    recent = []
+                else:
+                    recent = [str(x) for x in recent if x]
+                try:
+                    while rel_key in recent:
+                        recent.remove(rel_key)
+                except Exception:
+                    pass
+                recent.append(rel_key)
+                if len(recent) > 14:
+                    recent = recent[-14:]
+                bb["audio_recent"] = recent
             except Exception:
                 self.state["audio_action"] = None
+                bad = bb.get("audio_bad")
+                if not isinstance(bad, dict):
+                    bad = {}
+                bad[rel_key] = now + 120.0
+                bb["audio_bad"] = bad
                 self._sdk_action_release(bb)
                 return True
             return False
@@ -829,6 +940,7 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
     bb["rng_counter"] = rc + 1
     seed = bb_get(bb, "rng_seed", None)
     rng = random.Random(hash((seed, rc, int(now * 10))))
+    track_name = str(bb.get("track_name", "global"))
 
     def category(m: Macro) -> str:
         if "context" in m.tags:
@@ -930,6 +1042,20 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
             cat_weights["adventure"] = 0.55
             cat_weights["explore"] = 0.20
 
+    if track_name == "locomotion":
+        cat_weights["adventure"] = float(cat_weights.get("adventure", 0.0)) * 1.55
+        cat_weights["explore"] = float(cat_weights.get("explore", 0.0)) * 1.65
+        cat_weights["environment"] = float(cat_weights.get("environment", 0.0)) * 1.55
+        cat_weights["movement"] = float(cat_weights.get("movement", 0.0)) * 1.35
+        cat_weights["idle"] = float(cat_weights.get("idle", 0.0)) * 0.18
+        cat_weights["random"] = float(cat_weights.get("random", 0.0)) * 0.35
+        cat_weights["look"] = float(cat_weights.get("look", 0.0)) * 0.35
+        cat_weights["social"] = float(cat_weights.get("social", 0.0)) * 0.35
+        cat_weights["talk"] = float(cat_weights.get("talk", 0.0)) * 0.15
+        cat_weights["dance"] = float(cat_weights.get("dance", 0.0)) * 0.15
+        cat_weights["prank"] = float(cat_weights.get("prank", 0.0)) * 0.20
+        cat_weights["show"] = float(cat_weights.get("show", 0.0)) * 0.15
+
     cats = [c for c in cat_weights.keys() if pools.get(c)]
     if not cats:
         cats = list(pools.keys())
@@ -946,7 +1072,40 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
         else:
             bb["force_cat_uses"] = uses
     else:
-        chosen_cat = rng.choices(cats, weights=cw, k=1)[0]
+        intent_cat_key = f"intent_cat:{track_name}"
+        intent_until_key = f"intent_until:{track_name}"
+        intent_cat = str(bb.get(intent_cat_key, "")) if bb.get(intent_cat_key) is not None else ""
+        intent_until = float(bb.get(intent_until_key, 0.0))
+        keep_p = 0.72
+        if track_name == "locomotion" and intent_cat in ("idle", "look", "talk", "dance", "prank", "show", "social"):
+            keep_p = 0.30
+        if intent_cat and now < intent_until and pools.get(intent_cat) and rng.random() < keep_p:
+            chosen_cat = intent_cat
+        else:
+            chosen_cat = rng.choices(cats, weights=cw, k=1)[0]
+        if not intent_cat or intent_cat != chosen_cat or now >= intent_until:
+            dur_map = {
+                "adventure": 12.0,
+                "explore": 10.0,
+                "look": 7.0,
+                "social": 8.0,
+                "idle": 6.0,
+                "emotion": 6.0,
+                "random": 5.0,
+                "movement": 8.0,
+                "environment": 9.0,
+                "show": 9.0,
+                "talk": 7.0,
+                "prank": 8.0,
+                "dance": 10.0,
+                "energy": 10.0,
+                "context": 10.0,
+            }
+            intent_dur = float(dur_map.get(str(chosen_cat), 7.0))
+            if track_name == "locomotion" and chosen_cat == "idle":
+                intent_dur = min(3.5, intent_dur)
+            bb[intent_cat_key] = str(chosen_cat)
+            bb[intent_until_key] = now + max(2.5, intent_dur)
     bb["stat:last_cat"] = chosen_cat
     bb["stat:last_cat_t"] = now
     bb[f"stat:cat:{chosen_cat}"] = int(bb.get(f"stat:cat:{chosen_cat}", 0)) + 1
@@ -963,12 +1122,42 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
         dist_v = None
     import os
     base_dir = os.path.dirname(__file__)
+    recent_key = f"recent_macros:{track_name}"
+    recent_raw = bb.get(recent_key)
+    recent: List[str] = []
+    if isinstance(recent_raw, list):
+        recent = [str(x) for x in recent_raw if x]
     for m in eligible:
         w = float(m.weight)
+        if recent and m.name in recent:
+            w *= 0.12
         if not enable_fire and "fire" in m.tags:
             w *= 0.0
         if "fire" in m.tags and (person_seen or (dist_v is not None and dist_v < 1.0)):
             w *= 0.0
+        if track_name == "locomotion":
+            if "adventure" in m.tags or "explore" in m.tags:
+                w *= 1.35
+            if "idle" in m.tags and ("explore" not in m.tags) and ("adventure" not in m.tags):
+                w *= 0.22
+            if m.name.startswith("idle_") or m.name.startswith("random_"):
+                w *= 0.25
+        if track_name == "locomotion" and (not person_seen) and dist_v is not None and dist_v < 0.58:
+            if "idle" in m.tags:
+                w *= 0.18
+            if "safety" in m.tags or "environment" in m.tags:
+                w *= 1.3
+            if "explore" in m.tags and "safety" not in m.tags:
+                w *= 0.55
+            for s in m.steps:
+                if s.kind != "drive" or not s.args:
+                    continue
+                try:
+                    _dur, x, _y, _z = s.args
+                    if float(x) < -0.05:
+                        w *= 1.4
+                except Exception:
+                    pass
         if w > 0.0:
             for s in m.steps:
                 if s.kind != "audio" or not s.args:
@@ -993,13 +1182,18 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
         if mood == "sleepy" and "idle" in m.tags:
             w *= 2.0
 
-        wide_open = float(bb.get("wide_open_dist_m", 1.6))
+        wide_open = float(bb.get("wide_open_dist_m", 1.4))
         if dist_v is not None and dist_v >= wide_open and not person_seen:
             is_forward_arc = False
             is_forward_straight = False
+            dur_forward = 0.0
             for s in m.steps:
                 if s.kind == "cruise":
                     is_forward_straight = True
+                    try:
+                        dur_forward = max(dur_forward, float(s.args[0]) if s.args else 0.0)
+                    except Exception:
+                        pass
                     break
                 if s.kind != "drive" or not s.args:
                     continue
@@ -1007,6 +1201,7 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
                     _dur, x, _y, z = s.args
                     x = float(x)
                     z = float(z)
+                    dur_forward = max(dur_forward, float(_dur))
                 except Exception:
                     continue
                 if x > 0.12:
@@ -1016,11 +1211,25 @@ def pick_macro(macros: List[Macro], bb: Blackboard, mood: str) -> Macro:
                         is_forward_straight = True
                     break
             if is_forward_arc:
-                w *= 0.35
+                w *= 0.18
             elif is_forward_straight:
-                w *= 1.15
+                w *= 1.70
+                if dur_forward >= 6.0:
+                    w *= 1.25
+                if "adventure" in m.tags:
+                    w *= 1.15
         weights.append(max(0.0, w))
 
     chosen = rng.choices(eligible, weights=weights, k=1)[0]
     bb[f"cd:{chosen.name}"] = now
+    if chosen is not None:
+        if chosen.name in recent:
+            try:
+                recent.remove(chosen.name)
+            except Exception:
+                pass
+        recent.append(chosen.name)
+        if len(recent) > 8:
+            recent = recent[-8:]
+        bb[recent_key] = recent
     return chosen

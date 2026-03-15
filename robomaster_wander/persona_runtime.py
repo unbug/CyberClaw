@@ -218,7 +218,12 @@ def safe_stop(ctx: PersonaCtx) -> None:
     try:
         ctx.patrol.chassis.drive_speed(x=0, y=0, z=0)
     except Exception:
-        pass
+        try:
+            nf = getattr(ctx.patrol, "_note_action_failure", None)
+            if callable(nf):
+                nf()
+        except Exception:
+            raise
 
 
 def estimate_forward_obstacle(ctx: PersonaCtx) -> Optional[float]:
