@@ -109,6 +109,7 @@ class PersonaController:
             return
 
         mood = str(self.bb.get("mood", "curious"))
+        self._maybe_minion_background(ctx)
         self._track_loco.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
         self._track_head.tick(ctx, self.bb, mood=mood, enable_fire=enable_fire_now)
         self._maybe_audio_idle(ctx)
@@ -397,6 +398,11 @@ class PersonaController:
         if person_seen and safe_for_trick and now > float(self.bb.get("last_trick_t", 0.0)) + 18.0:
             play = float(self.bb.get("need_play", 0.0))
             if play > 0.45:
+                if self._maybe_trigger_minion_show(now):
+                    self.bb["last_trick_t"] = now
+                    rng = self._rng("trick_rng", now)
+                    self.bb["next_trick_t"] = now + rng.uniform(35.0, 65.0)
+                    return
                 if self._maybe_trigger_combo(now, mood=str(self.bb.get("mood", "curious")), person_seen=True):
                     self.bb["last_trick_t"] = now
                     rng = self._rng("trick_rng", now)
@@ -414,6 +420,11 @@ class PersonaController:
             mood = str(self.bb.get("mood", "curious"))
             play = float(self.bb.get("need_play", 0.0))
             if energy > 0.35 and mood != "scared" and play > 0.35:
+                if self._maybe_trigger_minion_show(now):
+                    self.bb["last_trick_t"] = now
+                    rng = self._rng("trick_rng", now)
+                    self.bb["next_trick_t"] = now + rng.uniform(35.0, 65.0)
+                    return
                 if self._maybe_trigger_combo(now, mood=mood, person_seen=False):
                     self.bb["last_trick_t"] = now
                     rng = self._rng("trick_rng", now)
@@ -470,6 +481,74 @@ class PersonaController:
         self.bb["force_macro_uses:overlay"] = 1
         self.bb["combo_cd_t"] = now + 16.0
         return True
+
+    def _maybe_trigger_minion_show(self, now: float, force: bool = False) -> bool:
+        if self.bb.get("force_macro:overlay") or self.bb.get("force_macro:locomotion") or self.bb.get("force_macro:head"):
+            return False
+        if self.bb.get("force_cat:overlay") or self.bb.get("force_cat:locomotion") or self.bb.get("force_cat:head"):
+            return False
+        if now < float(self.bb.get("minion_show_cd_t", 0.0)):
+            return False
+
+        rng = self._rng("minion_rng", now)
+        if (not force) and (rng.random() > 0.95):
+            return False
+
+        pools = [
+            "minion_goblin_prank",
+            "minion_goblin_slow",
+            "minion_robot_order",
+            "minion_announcer",
+        ]
+        i = int(self.bb.get("minion_show_i", 0))
+        style = pools[i % len(pools)]
+        self.bb["minion_show_i"] = i + 1
+
+        loco = f"combo_{style}_loco"
+        head = f"combo_{style}_head"
+        overlay = f"combo_{style}_overlay"
+        if (loco not in self._macro_by_name) or (head not in self._macro_by_name) or (overlay not in self._macro_by_name):
+            return False
+
+        until = now + 7.5
+        self.bb["force_macro:locomotion"] = loco
+        self.bb["force_macro_until:locomotion"] = until
+        self.bb["force_macro_uses:locomotion"] = 1
+        self.bb["force_macro:head"] = head
+        self.bb["force_macro_until:head"] = until
+        self.bb["force_macro_uses:head"] = 1
+        self.bb["force_macro:overlay"] = overlay
+        self.bb["force_macro_until:overlay"] = until
+        self.bb["force_macro_uses:overlay"] = 1
+        self.bb["minion_show_cd_t"] = now + 6.5
+        return True
+
+    def _maybe_minion_background(self, ctx: PersonaCtx) -> None:
+        now = float(ctx.now)
+        if now < float(self.bb.get("minion_bg_next_t", 0.0)):
+            return
+        if self.bb.get("force_macro:overlay") or self.bb.get("force_macro:locomotion") or self.bb.get("force_macro:head"):
+            return
+        if self.bb.get("force_cat:overlay") or self.bb.get("force_cat:locomotion") or self.bb.get("force_cat:head"):
+            return
+        if bool(self.bb.get("person_seen", False)):
+            return
+        energy = float(self.bb.get("energy", 0.0))
+        if energy < 0.28:
+            return
+        dist = ctx.dist
+        try:
+            dist_v = float(dist) if dist is not None else None
+        except Exception:
+            dist_v = None
+        if dist_v is not None and dist_v < 0.65:
+            return
+        if now < float(self.bb.get("minion_show_cd_t", 0.0)):
+            self.bb["minion_bg_next_t"] = now + 2.0
+            return
+
+        ok = self._maybe_trigger_minion_show(now, force=True)
+        self.bb["minion_bg_next_t"] = now + (12.0 if ok else 5.0)
 
     def _maybe_print_stats(self, ctx: PersonaCtx) -> None:
         now = float(ctx.now)

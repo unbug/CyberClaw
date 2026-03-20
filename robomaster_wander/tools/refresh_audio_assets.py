@@ -81,14 +81,54 @@ def _afconvert_to_wav48k_mono(src: str, dst: str) -> None:
 
 
 def _read_wav_mono_i16(path: str) -> tuple[int, bytes]:
-    with wave.open(path, "rb") as wf:
-        if wf.getnchannels() != 1:
-            raise RuntimeError(f"expected mono wav: {path}")
-        if wf.getsampwidth() != 2:
-            raise RuntimeError(f"expected 16-bit wav: {path}")
-        sr = int(wf.getframerate())
-        frames = wf.readframes(wf.getnframes())
-        return sr, frames
+    with open(path, "rb") as f:
+        buf = f.read()
+    if len(buf) < 12 or buf[0:4] != b"RIFF" or buf[8:12] != b"WAVE":
+        raise RuntimeError(f"not a wav file: {path}")
+
+    fmt = None
+    data = None
+    off = 12
+    while off + 8 <= len(buf):
+        cid = buf[off : off + 4]
+        size = int.from_bytes(buf[off + 4 : off + 8], "little", signed=False)
+        start = off + 8
+        end = start + size
+        if end > len(buf):
+            break
+        if cid == b"fmt ":
+            fmt = buf[start:end]
+        elif cid == b"data":
+            data = buf[start:end]
+        off = end + (size & 1)
+
+    if fmt is None or len(fmt) < 16:
+        raise RuntimeError(f"missing fmt chunk: {path}")
+    if data is None:
+        raise RuntimeError(f"missing data chunk: {path}")
+
+    w_format = int.from_bytes(fmt[0:2], "little", signed=False)
+    n_channels = int.from_bytes(fmt[2:4], "little", signed=False)
+    sr = int.from_bytes(fmt[4:8], "little", signed=False)
+    bits = int.from_bytes(fmt[14:16], "little", signed=False)
+
+    if w_format == 65534:
+        if len(fmt) < 40:
+            raise RuntimeError(f"invalid extensible fmt: {path}")
+        valid_bits = int.from_bytes(fmt[18:20], "little", signed=False)
+        subformat = fmt[24:40]
+        pcm_guid = bytes.fromhex("0100000000001000800000aa00389b71")
+        if subformat != pcm_guid:
+            raise RuntimeError(f"unsupported wav subformat: {path}")
+        bits = int(valid_bits)
+
+    if int(n_channels) != 1:
+        raise RuntimeError(f"expected mono wav: {path}")
+    if int(bits) != 16:
+        raise RuntimeError(f"expected 16-bit wav: {path}")
+    if len(data) % 2 != 0:
+        data = data[: len(data) - 1]
+    return int(sr), data
 
 
 def _write_wav_mono_i16(path: str, sr: int, frames: bytes) -> None:
@@ -186,8 +226,12 @@ def _extract_zip(zip_bytes: bytes, out_dir: str) -> None:
 def _iter_audio_files(root_dir: str) -> list[str]:
     out: list[str] = []
     for dp, _dns, fns in os.walk(root_dir):
+        if "__MACOSX" in dp:
+            continue
         for fn in fns:
             lo = fn.lower()
+            if fn.startswith("._"):
+                continue
             if lo.endswith((".ogg", ".wav", ".mp3", ".aiff", ".aif", ".m4a")):
                 out.append(os.path.join(dp, fn))
     out.sort()
@@ -303,20 +347,7 @@ def main() -> None:
     with open(os.path.join(dog_wav_dir, "_durations.json"), "w", encoding="utf-8") as f:
         json.dump(out_durations, f, ensure_ascii=False, indent=2, sort_keys=True)
 
-    packs = [
-        {
-            "name": "80 CC0 creture SFX #2",
-            "slug": "oga_cc0_creature_sfx_2",
-            "page": "https://opengameart.org/content/80-cc0-creture-sfx-2",
-            "license": "CC0",
-            "zip_urls": [
-                "https://opengameart.org/sites/default/files/80-CC0-creature-sfx-2.zip",
-                "https://opengameart.org/sites/default/files/80-CC0-creature-SFX-2.zip",
-                "https://opengameart.org/sites/default/files/80-CC0-creture-sfx-2.zip",
-            ],
-            "out_subdir": "oga_cc0_creature_sfx_2_wav",
-        },
-    ]
+    packs = []
 
     for p in packs:
         info = _process_pack_zip(

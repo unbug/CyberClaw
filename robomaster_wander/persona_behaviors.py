@@ -598,6 +598,68 @@ class MacroPlayer:
 
             step = type(step)(kind="audio", args=(path, float(chosen_dur_s)))
             k = "audio"
+        if k == "audio_cycle":
+            prefix = step.args[0] if step.args else ""
+            if isinstance(prefix, str) and prefix and not prefix.startswith("assets/"):
+                pv = bb.get(prefix)
+                if isinstance(pv, str) and pv:
+                    prefix = pv
+            if not isinstance(prefix, str) or not prefix:
+                return True
+
+            seed = bb_get(bb, "rng_seed", None)
+            c = int(bb.get("audio_cycle_counter", 0))
+            bb["audio_cycle_counter"] = c + 1
+            rng = random.Random(hash((seed, "audio_cycle", prefix, c, int(ctx.now * 3))))
+
+            key = f"audio_cycle:{prefix}"
+            pool = bb.get(key)
+            i = int(bb.get(key + ":i", 0))
+            if not isinstance(pool, list) or not pool:
+                try:
+                    try:
+                        from .audio_catalog import load_default_catalog
+                    except ImportError:
+                        from audio_catalog import load_default_catalog
+                    pool = [c.rel_path for c in load_default_catalog() if str(c.rel_path).startswith(prefix)]
+                except Exception:
+                    pool = []
+                pool = [str(x) for x in pool if x and isinstance(x, str)]
+                pool = sorted(set(pool))
+                rng.shuffle(pool)
+                bb[key] = pool
+                i = 0
+
+            if not pool:
+                return True
+
+            i = max(0, int(i))
+            if i >= len(pool):
+                rng.shuffle(pool)
+                bb[key] = pool
+                i = 0
+            path = str(pool[i])
+            i += 1
+            if i >= len(pool):
+                rng.shuffle(pool)
+                bb[key] = pool
+                i = 0
+            bb[key + ":i"] = i
+
+            dur_map = self.state.get("audio_cycle_dur_map")
+            if not isinstance(dur_map, dict) or (c % 37 == 0):
+                try:
+                    try:
+                        from .audio_catalog import load_default_catalog
+                    except ImportError:
+                        from audio_catalog import load_default_catalog
+                    dur_map = {str(cc.rel_path): float(cc.dur_s) for cc in load_default_catalog()}
+                except Exception:
+                    dur_map = {}
+                self.state["audio_cycle_dur_map"] = dur_map
+            dur_s = float(dur_map.get(path, 1.0))
+            step = type(step)(kind="audio", args=(path, dur_s))
+            k = "audio"
         if k == "audio":
             path = step.args[0] if step.args else ""
             dur_s = float(step.args[1]) if len(step.args) > 1 else 3.0

@@ -18,6 +18,29 @@ _CACHE: Optional[List[AudioClip]] = None
 
 def _infer_tags(name: str) -> Tuple[str, ...]:
     stem = os.path.splitext(os.path.basename(name))[0].lower()
+    folder = os.path.normpath(str(name)).lower().replace("\\", "/")
+    if "assets/audio/minionish_goblins_slow_wav/" in folder:
+        return ("minion", "goblin", "voice", "idle", "sleepy")
+    if "assets/audio/minionish_goblins_wav/" in folder:
+        return ("minion", "goblin", "voice", "cute", "mischief")
+    if "assets/audio/minionish_robot_voice_pack_wav/" in folder:
+        if stem in ("ouch", "thathurt"):
+            return ("minion", "robot", "voice", "hurt")
+        if stem.endswith("down") or stem in ("one more down", "onemoredown"):
+            return ("minion", "robot", "voice", "emotion")
+        if "backup" in stem:
+            return ("minion", "robot", "voice", "social")
+        if stem.startswith("target"):
+            return ("minion", "robot", "voice", "look")
+        return ("minion", "robot", "voice", "social")
+    if "assets/audio/minionish_voiceover_fighter_wav/" in folder:
+        if stem in ("game_over", "you_lose", "mission_failed", "wrong"):
+            return ("minion", "announcer", "voice", "emotion")
+        if stem in ("you_win", "mission_completed", "objective_achieved", "congratulations", "correct"):
+            return ("minion", "announcer", "voice", "social")
+        if stem.startswith("war_"):
+            return ("minion", "announcer", "voice", "mischief")
+        return ("minion", "announcer", "voice", "show")
     if stem.startswith("barking_"):
         return ("bark", "voice", "social")
     if stem.startswith("cute_"):
@@ -105,7 +128,10 @@ def load_default_catalog() -> List[AudioClip]:
 
     roots: List[Tuple[str, str]] = [
         ("oga_cc0_creature_sfx_wav", os.path.join("assets", "audio", "oga_cc0_creature_sfx_wav")),
-        ("oga_cc0_creature_sfx_2_wav", os.path.join("assets", "audio", "oga_cc0_creature_sfx_2_wav")),
+        ("minionish_goblins_wav", os.path.join("assets", "audio", "minionish_goblins_wav")),
+        ("minionish_goblins_slow_wav", os.path.join("assets", "audio", "minionish_goblins_slow_wav")),
+        ("minionish_robot_voice_pack_wav", os.path.join("assets", "audio", "minionish_robot_voice_pack_wav")),
+        ("minionish_voiceover_fighter_wav", os.path.join("assets", "audio", "minionish_voiceover_fighter_wav")),
     ]
 
     for dir_name, rel_prefix in roots:
@@ -126,7 +152,7 @@ def load_default_catalog() -> List[AudioClip]:
                     dur = _wav_duration(abs_path)
                 except Exception:
                     continue
-            tags = _infer_tags(fn)
+            tags = _infer_tags(rel)
             clips.append(AudioClip(rel_path=rel, dur_s=float(dur), tags=tags))
     _CACHE = clips
     return clips

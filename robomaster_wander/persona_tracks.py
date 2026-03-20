@@ -244,7 +244,20 @@ def build_default_tracks(all_macros: Sequence[Macro]) -> Tuple[TrackRunner, Trac
     )
     overlay = Track(
         name="overlay",
-        allowed_kinds={"expression", "led", "sound", "sound_seq", "utter", "sleep", "fire", "fire_burst", "fire_repeat", "audio", "audio_pick"},
+        allowed_kinds={
+            "expression",
+            "led",
+            "sound",
+            "sound_seq",
+            "utter",
+            "sleep",
+            "fire",
+            "fire_burst",
+            "fire_repeat",
+            "audio",
+            "audio_pick",
+            "audio_cycle",
+        },
         required_tags={"emotion", "idle", "talk", "show", "random", "social"},
         forbidden_tags=set(),
         min_gap_s=1.2,

@@ -1,0 +1,22 @@
+{
+  "AlertHeavyCasulaties.wav": 1.8,
+  "AllyDown.wav": 1.091,
+  "BackupRequested.wav": 1.114,
+  "GetOverHere.wav": 0.854,
+  "I need backup.wav": 1.062,
+  "Initializing.wav": 1.051,
+  "MissionObjectiveSet.wav": 1.393,
+  "OneMoreDown.wav": 1.15,
+  "Ouch.wav": 0.656,
+  "ProjectedLifeSpanLow.wav": 1.556,
+  "TakingCover.wav": 0.865,
+  "TargetAcquired.wav": 1.08,
+  "TargetDown.wav": 1.115,
+  "TargetFound.wav": 1.405,
+  "TargetLost.wav": 1.08,
+  "TargetNeutralized.wav": 1.341,
+  "TargetOutOfSight.wav": 1.207,
+  "ThatHurt.wav": 0.725,
+  "WhereAreYou.wav": 0.772,
+  "WhereDidYouGo.wav": 0.952
+}

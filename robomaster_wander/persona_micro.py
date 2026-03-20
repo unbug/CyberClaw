@@ -458,4 +458,150 @@ def build_micro_library(seed: int = 0) -> List[Macro]:
             )
         )
 
+    minion_combo_defs = [
+        {
+            "style": "minion_goblin_prank",
+            "loco": [
+                Step("expression"),
+                Step("drive", (0.65, 0.20, 0.0, 0.0)),
+                Step("spin", (120.0, 160.0)),
+                Step("drive", (0.55, 0.18, 0.0, 0.0)),
+                Step("spin", (-160.0, 160.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("show", "movement", "mischief"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (1.8, -60, 60)),
+                Step("gimbal_to", (0.0, -18.0)),
+                Step("sleep", (0.08,)),
+                Step("gimbal_to", (0.0, 18.0)),
+                Step("sleep", (0.08,)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("show", "look", "curiosity"),
+            "overlay": [
+                Step("expression"),
+                Step("led", (255, 220, 60, "flash")),
+                Step("audio_cycle", ("assets/audio/minionish_goblins_wav",)),
+                Step("sleep", (0.06,)),
+                Step("audio_cycle", ("assets/audio/minionish_goblins_wav",)),
+                Step("sleep", (0.06,)),
+                Step("audio_cycle", ("assets/audio/minionish_goblins_wav",)),
+                Step("led", (255, 255, 255, "on")),
+            ],
+            "overlay_tags": ("show", "talk", "voice", "mischief"),
+        },
+        {
+            "style": "minion_goblin_slow",
+            "loco": [
+                Step("expression"),
+                Step("drive", (2.8, 0.10, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("show", "idle", "energy"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (2.4, -24, 24)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("show", "idle", "look"),
+            "overlay": [
+                Step("expression"),
+                Step("led", (255, 180, 80, "flash")),
+                Step("audio_cycle", ("assets/audio/minionish_goblins_slow_wav",)),
+                Step("sleep", (0.08,)),
+                Step("audio_cycle", ("assets/audio/minionish_goblins_slow_wav",)),
+                Step("led", (255, 255, 255, "on")),
+            ],
+            "overlay_tags": ("show", "talk", "voice", "idle"),
+        },
+        {
+            "style": "minion_robot_order",
+            "loco": [
+                Step("expression"),
+                Step("stop"),
+                Step("spin", (60.0, 160.0)),
+                Step("spin", (-60.0, 160.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("show", "social", "movement"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_to", (0.0, 0.0)),
+                Step("sleep", (0.06,)),
+                Step("gimbal_to", (0.0, 32.0)),
+                Step("sleep", (0.06,)),
+                Step("gimbal_to", (0.0, -32.0)),
+                Step("sleep", (0.06,)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("show", "look", "social"),
+            "overlay": [
+                Step("expression"),
+                Step("led", (60, 160, 255, "flash")),
+                Step("audio_cycle", ("assets/audio/minionish_robot_voice_pack_wav",)),
+                Step("sleep", (0.06,)),
+                Step("audio_cycle", ("assets/audio/minionish_robot_voice_pack_wav",)),
+                Step("led", (255, 255, 255, "on")),
+            ],
+            "overlay_tags": ("show", "talk", "voice", "social"),
+        },
+        {
+            "style": "minion_announcer",
+            "loco": [
+                Step("expression"),
+                Step("spin", (240.0, 150.0)),
+                Step("drive", (0.6, 0.18, 0.0, 0.0)),
+                Step("stop"),
+            ],
+            "loco_tags": ("show", "social", "emotion", "movement"),
+            "head": [
+                Step("expression"),
+                Step("gimbal_sweep", (2.2, -38, 38)),
+                Step("gimbal_center"),
+            ],
+            "head_tags": ("show", "social", "look"),
+            "overlay": [
+                Step("expression"),
+                Step("led", (255, 255, 255, "flash")),
+                Step("audio_cycle", ("assets/audio/minionish_voiceover_fighter_wav",)),
+                Step("sleep", (0.06,)),
+                Step("audio_cycle", ("assets/audio/minionish_voiceover_fighter_wav",)),
+                Step("led", (255, 255, 255, "on")),
+            ],
+            "overlay_tags": ("show", "talk", "voice", "social"),
+        },
+    ]
+
+    for c in minion_combo_defs:
+        style = str(c["style"])
+        macros.append(
+            Macro(
+                name=f"combo_{style}_loco",
+                steps=list(c["loco"]),
+                tags=tuple(c["loco_tags"]),
+                weight=0.14,
+                cooldown_s=4.5,
+            )
+        )
+        macros.append(
+            Macro(
+                name=f"combo_{style}_head",
+                steps=list(c["head"]),
+                tags=tuple(c["head_tags"]),
+                weight=0.14,
+                cooldown_s=4.5,
+            )
+        )
+        macros.append(
+            Macro(
+                name=f"combo_{style}_overlay",
+                steps=list(c["overlay"]),
+                tags=tuple(c["overlay_tags"]),
+                weight=0.14,
+                cooldown_s=4.5,
+            )
+        )
+
     return macros
